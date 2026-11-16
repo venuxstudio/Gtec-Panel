@@ -1,0 +1,298 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated instructor profile and optional quick-unlock PIN hash.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "pinHash": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "displayName", "username", "createdAt", "updatedAt"]
+    },
+    "Course": {
+      "title": "Course",
+      "description": "Computer institute course definition with duration and software modules.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "shortName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "durationValue": {
+          "type": "number"
+        },
+        "durationUnit": {
+          "type": "string",
+          "enum": ["days", "weeks", "months"]
+        },
+        "durationDays": {
+          "type": "number"
+        },
+        "softwares": {
+          "type": "array",
+          "description": "Bounded list (max 12) of { fullName, shortName } objects."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "shortName",
+        "fullName",
+        "durationValue",
+        "durationUnit",
+        "durationDays",
+        "softwares",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Student admission record assigned to a branch with up to two enrolled courses.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "branch": {
+          "type": "string",
+          "enum": ["MAVELIKARA", "KAYAMKULAM"]
+        },
+        "course1Id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "course1Short": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30
+        },
+        "course1Full": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "course1DurationDays": {
+          "type": "number"
+        },
+        "course2Id": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 128
+        },
+        "course2Short": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 30
+        },
+        "course2Full": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 160
+        },
+        "course2DurationDays": {
+          "type": "number"
+        },
+        "totalDurationDays": {
+          "type": "number"
+        },
+        "joiningDate": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "examDate": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 10
+        },
+        "contact": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 30
+        },
+        "completedSoftwares": {
+          "type": "array",
+          "description": "Bounded list (max 24) of completed software identifiers."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["ongoing", "completed"]
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "name",
+        "branch",
+        "course1Id",
+        "course1Short",
+        "course1Full",
+        "course1DurationDays",
+        "course2Id",
+        "course2Short",
+        "course2Full",
+        "course2DurationDays",
+        "totalDurationDays",
+        "joiningDate",
+        "examDate",
+        "contact",
+        "completedSoftwares",
+        "status",
+        "notes",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Daily attendance status entry for a student on a specific calendar date.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "studentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "branch": {
+          "type": "string",
+          "enum": ["MAVELIKARA", "KAYAMKULAM"]
+        },
+        "date": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["present", "absent", "late", "excused"]
+        },
+        "remark": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "studentId",
+        "branch",
+        "date",
+        "status",
+        "remark",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private instructor account profile and quick-unlock PIN hash."
+    },
+    "/courses/{courseId}": {
+      "schema": { "$ref": "#/entities/Course" },
+      "description": "Institute courses created and managed by the authenticated instructor."
+    },
+    "/students/{studentId}": {
+      "schema": { "$ref": "#/entities/Student" },
+      "description": "Student enrollment records across Mavelikara and Kayamkulam branches."
+    },
+    "/students/{studentId}/attendance/{dateStr}": {
+      "schema": { "$ref": "#/entities/AttendanceRecord" },
+      "description": "Daily attendance records nested under each student document."
+    }
+  }
+}

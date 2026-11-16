@@ -1,0 +1,6 @@
+{
+  "name": "G-TEC MM Panel",
+  "description": "Institute administration portal for Mavelikara and Kayamkulam branches covering admissions, courses, software modules, duration progress, exam schedules, and attendance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
