@@ -1,13 +1,17 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Edit3, ExternalLink, FileDown, Search, UserPlus } from 'lucide-react';
+import { DarkSelect } from '../components/DarkSelect';
+import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
-import { calculateDurationMetrics } from '../lib/duration';
-import { exportBatchPdfReport } from '../lib/pdfReport';
+import { useNotify } from '../context/NotificationContext';
+import { calculateDurationMetrics, fetchInChunks } from '../lib/duration';
 import { AttendanceRecord, BRANCH_LIST, BranchId } from '../types';
 
 export function StudentsDirectoryPage() {
+  const { activeTrainer } = useAuth();
   const { students, courses, loading, fetchStudentAttendance } = useData();
+  const { notify } = useNotify();
   const [selectedBranch, setSelectedBranch] = useState<'ALL' | BranchId>('ALL');
   const [queryText, setQueryText] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'ongoing' | 'completed'>('all');
@@ -21,6 +25,7 @@ export function StudentsDirectoryPage() {
       if (!q) return true;
       return (
         s.name.toLowerCase().includes(q) ||
+        s.regNo.toLowerCase().includes(q) ||
         s.course1Short.toLowerCase().includes(q) ||
         s.course2Short.toLowerCase().includes(q) ||
         s.contact.toLowerCase().includes(q)
@@ -32,17 +37,20 @@ export function StudentsDirectoryPage() {
     if (filtered.length === 0) return;
     setExportingPdf(true);
     try {
-      const entries = await Promise.all(
-        filtered.map(async (s) => {
+      const entries = await fetchInChunks(
+        filtered,
+        async (s) => {
           const recs = await fetchStudentAttendance(s.id);
           return [s.id, recs] as const;
-        })
+        },
+        10
       );
       const attendanceByStudentId: Record<string, AttendanceRecord[]> = {};
       entries.forEach(([id, recs]) => {
         attendanceByStudentId[id] = recs;
       });
       const scopeLabel = selectedBranch === 'ALL' ? 'All Branches' : selectedBranch;
+      const { exportBatchPdfReport } = await import('../lib/pdfReport');
       exportBatchPdfReport({
         title: `Administrative Student Report (${scopeLabel})`,
         subtitle: `Filter: ${statusFilter} · Attendance & Course Progress Summary`,
@@ -50,6 +58,19 @@ export function StudentsDirectoryPage() {
         students: filtered,
         courses,
         attendanceByStudentId,
+        trainerName: activeTrainer?.name || 'Trainer',
+        trainerDesignation: activeTrainer?.designation || '',
+      });
+      notify({
+        title: 'PDF REPORT DOWNLOADED',
+        message: `${scopeLabel} report (${filtered.length} students) exported.`,
+        tone: 'info',
+      });
+    } catch (err) {
+      notify({
+        title: 'PDF EXPORT FAILED',
+        message: err instanceof Error ? err.message : 'Could not generate PDF report.',
+        tone: 'error',
       });
     } finally {
       setExportingPdf(false);
@@ -95,24 +116,24 @@ export function StudentsDirectoryPage() {
             type="search"
             value={queryText}
             onChange={(e) => setQueryText(e.target.value)}
-            placeholder="Search student name, course, or contact..."
-            className="min-h-[42px] w-full rounded-xl border border-white/12 bg-black/40 pl-10 pr-4 text-sm text-white placeholder-zinc-500 focus:border-white/30 focus:outline-none"
+            placeholder="Search student name, Reg.No., course, or contact..."
+            className="min-h-[44px] w-full rounded-xl border border-white/12 bg-black/40 pl-10 pr-4 text-sm text-white placeholder-zinc-500 focus:border-white/30 focus:outline-none"
           />
         </div>
 
-        <select
+        <DarkSelect
           value={selectedBranch}
-          onChange={(e) => setSelectedBranch(e.target.value as 'ALL' | BranchId)}
-          aria-label="Select Branch"
-          className="min-h-[42px] rounded-xl border border-white/12 bg-[#12161D] px-3.5 text-sm text-white focus:border-white/30 focus:outline-none"
-        >
-          <option value="ALL">Select Branch (All)</option>
-          {BRANCH_LIST.map((b) => (
-            <option key={b.id} value={b.id}>
-              {b.name}
-            </option>
-          ))}
-        </select>
+          onChange={(val) => setSelectedBranch(val as 'ALL' | BranchId)}
+          ariaLabel="Select Branch"
+          className="sm:w-52"
+          options={[
+            { value: 'ALL', label: 'Select Branch (All)' },
+            ...BRANCH_LIST.map((b) => ({
+              value: b.id,
+              label: b.name,
+            })),
+          ]}
+        />
 
         <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
           {(['all', 'ongoing', 'completed'] as const).map((st) => (
@@ -166,6 +187,11 @@ export function StudentsDirectoryPage() {
                       >
                         {student.name}
                       </Link>
+                      {student.regNo && (
+                        <span className="font-mono text-xs text-zinc-400">
+                          #{student.regNo}
+                        </span>
+                      )}
                       <span className="text-xs text-zinc-500">·</span>
                       <span className="font-mono text-xs text-zinc-400">{student.branch}</span>
                     </div>
@@ -179,9 +205,7 @@ export function StudentsDirectoryPage() {
                         {isCompleted ? 'Completed' : 'Ongoing'}
                       </span>
                       <span aria-hidden="true">·</span>
-                      <span className="font-mono tabular-nums">
-                        {metrics.daysLeft}d left
-                      </span>
+                      <span className="font-mono tabular-nums">{metrics.daysLeft}d left</span>
                       <span aria-hidden="true">·</span>
                       <span className="font-mono">{student.contact}</span>
                     </div>

@@ -25,13 +25,14 @@ import {
 } from 'lucide-react';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { DurationProgressBar } from '../components/DurationProgressBar';
+import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
+import { useNotify } from '../context/NotificationContext';
 import {
   calculateDurationMetrics,
   formatReadableDate,
   isBranchClassDay,
 } from '../lib/duration';
-import { exportStudentPdfReport } from '../lib/pdfReport';
 import { AttendanceRecord, AttendanceStatus, BRANCHES } from '../types';
 
 const STATUS_LABEL: Record<AttendanceStatus, string> = {
@@ -44,6 +45,7 @@ const STATUS_LABEL: Record<AttendanceStatus, string> = {
 export function StudentDetailPage() {
   const { studentId } = useParams<{ studentId: string }>();
   const navigate = useNavigate();
+  const { activeTrainer } = useAuth();
   const {
     students,
     courses,
@@ -55,6 +57,7 @@ export function StudentDetailPage() {
     markAttendance,
     fetchStudentAttendance,
   } = useData();
+  const { notify } = useNotify();
 
   const student = useMemo(
     () => students.find((s) => s.id === studentId),
@@ -92,10 +95,16 @@ export function StudentDetailPage() {
     try {
       const list = await fetchStudentAttendance(studentId);
       setAttendanceRecords(list);
+    } catch (err) {
+      notify({
+        title: 'ATTENDANCE LOAD FAILED',
+        message: err instanceof Error ? err.message : 'Could not load attendance records.',
+        tone: 'error',
+      });
     } finally {
       setAttLoading(false);
     }
-  }, [studentId, fetchStudentAttendance]);
+  }, [studentId, fetchStudentAttendance, notify]);
 
   useEffect(() => {
     loadAttendance();
@@ -119,9 +128,7 @@ export function StudentDetailPage() {
   }, [selectedDateStr, attendanceMap]);
 
   if (loading) {
-    return (
-      <div className="glass-panel h-64 animate-pulse rounded-2xl p-6" />
-    );
+    return <div className="glass-panel h-64 animate-pulse rounded-2xl p-6" />;
   }
 
   if (!student) {
@@ -142,6 +149,8 @@ export function StudentDetailPage() {
   }
 
   const branchInfo = BRANCHES[student.branch];
+  const branchSchedule =
+    activeTrainer?.branchSchedules?.[student.branch] || branchInfo.scheduleLabel;
   const metrics = calculateDurationMetrics(
     student.joiningDate,
     student.totalDurationDays,
@@ -166,13 +175,11 @@ export function StudentDetailPage() {
     })),
   ];
 
-  // Calendar grid generation
   const monthStart = startOfMonth(calendarMonth);
   const monthEnd = endOfMonth(calendarMonth);
   const daysInMonth = eachDayOfInterval({ start: monthStart, end: monthEnd });
   const leadingEmptyDays = getDay(monthStart);
 
-  // Attendance stats
   const presentCount = attendanceRecords.filter((r) => r.status === 'present').length;
   const lateCount = attendanceRecords.filter((r) => r.status === 'late').length;
   const absentCount = attendanceRecords.filter((r) => r.status === 'absent').length;
@@ -185,6 +192,17 @@ export function StudentDetailPage() {
     try {
       await markAttendance(student, selectedDateStr, selectedStatus, remark);
       await loadAttendance();
+      notify({
+        title: 'ATTENDANCE RECORDED',
+        message: `${student.name} marked ${STATUS_LABEL[selectedStatus]} for ${selectedDateStr}.`,
+        tone: 'success',
+      });
+    } catch (err) {
+      notify({
+        title: 'SAVE FAILED',
+        message: err instanceof Error ? err.message : 'Could not save attendance entry.',
+        tone: 'error',
+      });
     } finally {
       setSavingAtt(false);
     }
@@ -197,22 +215,42 @@ export function StudentDetailPage() {
     try {
       await updateStudentExamDate(student.id, examDateInput, notesInput);
       setMetaSavedMsg('Saved');
-      setTimeout(() => setMetaSavedMsg(''), 2500);
+      notify({
+        title: 'EXAM & NOTES SAVED',
+        message: examDateInput
+          ? `Exam scheduled for ${formatReadableDate(examDateInput)}.`
+          : `Updated instructor notes for ${student.name}.`,
+        tone: 'success',
+      });
+      setTimeout(() => setMetaSavedMsg(''), 1800);
+    } catch (err) {
+      notify({
+        title: 'SAVE FAILED',
+        message: err instanceof Error ? err.message : 'Unable to save exam & notes.',
+        tone: 'error',
+      });
     } finally {
       setSavingMeta(false);
     }
   };
 
   const handleExportCsv = () => {
-    const header = ['Date', 'Branch', 'Student', 'Status', 'Remark'];
+    const trainerFooterName = activeTrainer?.name || 'Trainer';
+    const trainerFooterDesig = activeTrainer?.designation || '';
+    const header = ['Reg. No.', 'Date', 'Branch', 'Student', 'Status', 'Remark'];
     const rows = attendanceRecords.map((r) => [
+      `"${(student.regNo || '').replace(/"/g, '""')}"`,
       r.date,
       r.branch,
       `"${student.name.replace(/"/g, '""')}"`,
       r.status,
       `"${(r.remark || '').replace(/"/g, '""')}"`,
     ]);
-    const csv = [header.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const footer = [
+      '',
+      `"Trainer: ${trainerFooterName}${trainerFooterDesig ? ` (${trainerFooterDesig})` : ''}"`,
+    ];
+    const csv = [header.join(','), ...rows.map((r) => r.join(',')), footer.join(',')].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -220,13 +258,31 @@ export function StudentDetailPage() {
     link.download = `${student.name.toLowerCase().replace(/\s+/g, '_')}_attendance.csv`;
     link.click();
     URL.revokeObjectURL(url);
+    notify({
+      title: 'CSV SHEET EXPORTED',
+      message: `Attendance CSV downloaded for ${student.name}.`,
+      tone: 'info',
+    });
   };
 
   const handleConfirmDelete = async () => {
     setDeleting(true);
     try {
+      const removedName = student.name;
+      const targetBranch = student.branch;
       await deleteStudent(student.id);
-      navigate(`/branch/${student.branch}`);
+      notify({
+        title: 'STUDENT REMOVED',
+        message: `${removedName} deleted from ${targetBranch}.`,
+        tone: 'warning',
+      });
+      navigate(`/branch/${targetBranch}`);
+    } catch (err) {
+      notify({
+        title: 'DELETE FAILED',
+        message: err instanceof Error ? err.message : 'Unable to delete student.',
+        tone: 'error',
+      });
     } finally {
       setDeleting(false);
     }
@@ -234,14 +290,21 @@ export function StudentDetailPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header Bar with Edit, Remove, and Close Icon */}
       <div className="glass-panel rounded-3xl p-6 sm:p-7">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
               <span className="font-medium text-emerald-400">{branchInfo.name}</span>
               <span aria-hidden="true">·</span>
-              <span className="font-mono">{branchInfo.scheduleLabel}</span>
+              <span className="font-mono">
+                {activeTrainer?.branchSchedules?.[student.branch] || branchInfo.scheduleLabel}
+              </span>
+              {student.regNo && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-mono text-zinc-300">Reg. No: {student.regNo}</span>
+                </>
+              )}
               <span aria-hidden="true">·</span>
               <span className="capitalize">
                 Status: {student.status === 'completed' ? 'Completed' : 'Ongoing'}
@@ -284,13 +347,30 @@ export function StudentDetailPage() {
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             <button
               type="button"
-              onClick={() =>
-                exportStudentPdfReport({
-                  student,
-                  courses,
-                  attendanceRecords,
-                })
-              }
+              onClick={async () => {
+                try {
+                  const { exportStudentPdfReport } = await import('../lib/pdfReport');
+                  exportStudentPdfReport({
+                    student,
+                    courses,
+                    attendanceRecords,
+                    trainerName: activeTrainer?.name || 'Trainer',
+                    trainerDesignation: activeTrainer?.designation || '',
+                    branchSchedule,
+                  });
+                  notify({
+                    title: 'PDF REPORT DOWNLOADED',
+                    message: `Progress & attendance report saved for ${student.name}.`,
+                    tone: 'info',
+                  });
+                } catch (err) {
+                  notify({
+                    title: 'PDF EXPORT FAILED',
+                    message: err instanceof Error ? err.message : 'Unable to generate PDF.',
+                    tone: 'error',
+                  });
+                }
+              }}
               className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl border border-emerald-500/35 bg-emerald-500/12 px-3 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/20 whitespace-nowrap"
             >
               <FileDown className="h-3.5 w-3.5" />
@@ -299,12 +379,24 @@ export function StudentDetailPage() {
 
             <button
               type="button"
-              onClick={() =>
-                updateStudentStatus(
-                  student.id,
-                  student.status === 'completed' ? 'ongoing' : 'completed'
-                )
-              }
+              onClick={async () => {
+                const nextStatus =
+                  student.status === 'completed' ? 'ongoing' : 'completed';
+                try {
+                  await updateStudentStatus(student.id, nextStatus);
+                  notify({
+                    title: 'STATUS UPDATED',
+                    message: `${student.name} marked as ${nextStatus}.`,
+                    tone: 'success',
+                  });
+                } catch (err) {
+                  notify({
+                    title: 'STATUS UPDATE FAILED',
+                    message: err instanceof Error ? err.message : 'Could not update status.',
+                    tone: 'error',
+                  });
+                }
+              }}
               className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl border border-white/12 bg-white/[0.04] px-3 text-xs font-medium text-zinc-200 transition-colors hover:bg-white/[0.09] whitespace-nowrap"
             >
               <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
@@ -371,7 +463,6 @@ export function StudentDetailPage() {
 
       {/* Main Content Split: Softwares & Exam Info + Attendance Tracker */}
       <div className="grid gap-6 lg:grid-cols-12">
-        {/* Left Column: Softwares (Red = Completed, Green = Active) + Exam Date */}
         <div className="space-y-6 lg:col-span-5">
           <section className="glass-panel rounded-2xl p-5 sm:p-6">
             <div className="flex items-center justify-between gap-2">
@@ -398,7 +489,24 @@ export function StudentDetailPage() {
                     <button
                       key={sw.key}
                       type="button"
-                      onClick={() => toggleStudentSoftware(student, sw.key)}
+                      onClick={async () => {
+                        const willComplete = !isCompleted;
+                        try {
+                          await toggleStudentSoftware(student, sw.key);
+                          notify({
+                            title: 'MODULE UPDATED',
+                            message: `${sw.shortName} marked ${willComplete ? 'Completed' : 'Active'}.`,
+                            tone: 'info',
+                          });
+                        } catch (err) {
+                          notify({
+                            title: 'UPDATE FAILED',
+                            message:
+                              err instanceof Error ? err.message : 'Unable to update module.',
+                            tone: 'error',
+                          });
+                        }
+                      }}
                       className={`flex min-h-[46px] w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors ${
                         isCompleted
                           ? 'border-red-500/35 bg-red-500/10 hover:bg-red-500/15'
@@ -427,7 +535,6 @@ export function StudentDetailPage() {
             )}
           </section>
 
-          {/* Exam Date & Instructor Notes */}
           <section className="glass-panel rounded-2xl p-5 sm:p-6">
             <h2 className="text-base font-semibold text-white">Exam Date &amp; Notes</h2>
             <form onSubmit={handleSaveExamAndNotes} className="mt-4 space-y-3.5">
@@ -469,7 +576,6 @@ export function StudentDetailPage() {
           </section>
         </div>
 
-        {/* Right Column: Interactive Monthly Attendance Calendar & Recorder */}
         <section className="glass-panel rounded-2xl p-5 sm:p-6 lg:col-span-7">
           <div className="flex flex-col gap-3 border-b border-white/[0.08] pb-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -478,7 +584,7 @@ export function StudentDetailPage() {
                 <span>Attendance Record</span>
               </h2>
               <p className="mt-0.5 text-xs text-zinc-400">
-                Scheduled days ({branchInfo.scheduleLabel}) are highlighted. Select any date to record attendance.
+                Scheduled days ({branchSchedule}) are highlighted. Select any date to record attendance.
               </p>
             </div>
 
@@ -493,7 +599,6 @@ export function StudentDetailPage() {
             </button>
           </div>
 
-          {/* Attendance Summary Strip */}
           <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div className="rounded-xl border border-white/[0.06] bg-black/30 p-3">
               <span className="text-[11px] text-zinc-500">Attendance Rate</span>
@@ -521,7 +626,6 @@ export function StudentDetailPage() {
             </div>
           </div>
 
-          {/* Month Switcher & Calendar Grid */}
           <div className="mt-5">
             <div className="mb-3 flex items-center justify-between">
               <h3 className="font-mono text-sm font-semibold text-white">
@@ -571,7 +675,7 @@ export function StudentDetailPage() {
                 const rec = attendanceMap.get(dateStr);
                 const isSelected = selectedDateStr === dateStr;
                 const isToday = isSameDay(day, new Date());
-                const classDay = isBranchClassDay(student.branch, day);
+                const classDay = isBranchClassDay(student.branch, day, branchSchedule);
 
                 let stateClasses = classDay
                   ? 'border-white/15 bg-white/[0.05] text-white'
@@ -610,7 +714,6 @@ export function StudentDetailPage() {
             </div>
           </div>
 
-          {/* Mark Attendance Control Bar for Selected Date */}
           <div className="mt-5 rounded-2xl border border-white/[0.08] bg-black/35 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs font-medium text-zinc-200">
@@ -627,28 +730,26 @@ export function StudentDetailPage() {
             </div>
 
             <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {(['present', 'absent', 'late', 'excused'] as AttendanceStatus[]).map(
-                (st) => (
-                  <button
-                    key={st}
-                    type="button"
-                    onClick={() => setSelectedStatus(st)}
-                    className={`min-h-[38px] rounded-xl border text-xs font-medium capitalize transition-colors ${
-                      selectedStatus === st
-                        ? st === 'present'
-                          ? 'border-emerald-500 bg-emerald-500 text-zinc-950 font-semibold'
-                          : st === 'absent'
-                          ? 'border-red-500 bg-red-500 text-white font-semibold'
-                          : st === 'late'
-                          ? 'border-amber-400 bg-amber-400 text-zinc-950 font-semibold'
-                          : 'border-sky-400 bg-sky-400 text-zinc-950 font-semibold'
-                        : 'border-white/10 bg-white/[0.03] text-zinc-300 hover:bg-white/[0.07]'
-                    }`}
-                  >
-                    {st}
-                  </button>
-                )
-              )}
+              {(['present', 'absent', 'late', 'excused'] as AttendanceStatus[]).map((st) => (
+                <button
+                  key={st}
+                  type="button"
+                  onClick={() => setSelectedStatus(st)}
+                  className={`min-h-[38px] rounded-xl border text-xs font-medium capitalize transition-colors ${
+                    selectedStatus === st
+                      ? st === 'present'
+                        ? 'border-emerald-500 bg-emerald-500 text-zinc-950 font-semibold'
+                        : st === 'absent'
+                        ? 'border-red-500 bg-red-500 text-white font-semibold'
+                        : st === 'late'
+                        ? 'border-amber-400 bg-amber-400 text-zinc-950 font-semibold'
+                        : 'border-sky-400 bg-sky-400 text-zinc-950 font-semibold'
+                      : 'border-white/10 bg-white/[0.03] text-zinc-300 hover:bg-white/[0.07]'
+                  }`}
+                >
+                  {st}
+                </button>
+              ))}
             </div>
 
             <div className="mt-3 flex flex-col gap-2 sm:flex-row">
@@ -671,7 +772,6 @@ export function StudentDetailPage() {
             </div>
           </div>
 
-          {/* Recent Attendance Log */}
           <div className="mt-5">
             <h3 className="text-xs font-medium text-zinc-400">Recent Entries</h3>
             {attLoading ? (
@@ -721,7 +821,7 @@ export function StudentDetailPage() {
       <ConfirmDialog
         open={confirmDeleteOpen}
         title="Remove Student?"
-        description={`This will permanently remove ${student.name} and all their attendance records from G-TEC MM Panel.`}
+        description={`This will permanently remove ${student.name} and all their attendance records.`}
         confirmLabel="Remove Student"
         busy={deleting}
         onConfirm={handleConfirmDelete}

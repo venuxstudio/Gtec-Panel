@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { BookPlus, Lock, LogOut, Menu, Search, UserPlus, X } from 'lucide-react';
+import { BookPlus, LogOut, Menu, Search, UserPlus, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
+import { useNotify } from '../context/NotificationContext';
 
 export function TopBar() {
-  const { logout, lockSession, hasPinConfigured } = useAuth();
+  const { activeTrainer, logout } = useAuth();
   const { students, courses } = useData();
+  const { notify } = useNotify();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -38,6 +40,7 @@ export function TopBar() {
         .filter(
           (s) =>
             s.name.toLowerCase().includes(q) ||
+            s.regNo.toLowerCase().includes(q) ||
             s.course1Short.toLowerCase().includes(q) ||
             s.course2Short.toLowerCase().includes(q) ||
             s.contact.toLowerCase().includes(q) ||
@@ -55,13 +58,35 @@ export function TopBar() {
   }, [searchQuery, students, courses]);
 
   const hasResults = searchResults.students.length > 0 || searchResults.courses.length > 0;
-
   const isActive = (prefix: string) => location.pathname.startsWith(prefix);
 
   return (
-    <header className="sticky top-0 z-40 border-b border-white/[0.08] bg-[#090B0E]/88 backdrop-blur-xl">
-      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
-        {/* Zone 1: Single-line Brand Title */}
+    <header className="sticky top-0 z-40 border-b border-white/[0.08] bg-[#090B0E]/90 backdrop-blur-xl">
+      {/* Persistent Trainer Identity Banner with Periodic Light Sweep */}
+      {activeTrainer && (
+        <div className="border-b border-white/[0.06] bg-[#0D1117]/90">
+          <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-1.5 sm:px-6 lg:px-8">
+            <Link
+              to="/dashboard"
+              className="trainer-sweep-badge inline-flex items-center gap-2.5 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1 text-xs transition-colors hover:border-emerald-500/35"
+            >
+              <span className="font-semibold text-white">{activeTrainer.name}</span>
+              <span className="text-zinc-500" aria-hidden="true">
+                ·
+              </span>
+              <span className="text-emerald-400 font-medium">
+                {activeTrainer.designation}
+              </span>
+            </Link>
+            <span className="hidden sm:inline font-mono text-[11px] text-zinc-400">
+              {activeTrainer.branches.join(' · ')}
+            </span>
+          </div>
+        </div>
+      )}
+
+      <div className="mx-auto flex h-15 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
+        {/* Zone 1: Brand Title */}
         <Link
           to="/branches"
           className="flex items-center gap-2.5 text-base sm:text-lg font-semibold tracking-tight text-white whitespace-nowrap shrink-0"
@@ -73,11 +98,21 @@ export function TopBar() {
               <path d="M4 17l8 4 8-4" />
             </svg>
           </span>
-          <span>G-TEC MM Panel</span>
+          <span>G-TEC Trainer Panel</span>
         </Link>
 
         {/* Zone 2: Clean Single-line Nav Links */}
-        <nav className="hidden lg:flex items-center gap-6 text-sm font-medium">
+        <nav className="hidden lg:flex items-center gap-5 text-sm font-medium">
+          <Link
+            to="/dashboard"
+            className={`whitespace-nowrap shrink-0 py-1 transition-colors ${
+              isActive('/dashboard')
+                ? 'text-white border-b border-emerald-400'
+                : 'text-zinc-400 hover:text-white'
+            }`}
+          >
+            Dashboard
+          </Link>
           <Link
             to="/branches"
             className={`whitespace-nowrap shrink-0 py-1 transition-colors ${
@@ -123,8 +158,8 @@ export function TopBar() {
                   setSearchQuery(e.target.value);
                   setSearchOpen(true);
                 }}
-                placeholder="Search students or courses..."
-                className="w-44 lg:w-52 bg-transparent text-xs text-white placeholder-zinc-500 focus:outline-none"
+                placeholder="Search students, Reg.No..."
+                className="w-40 lg:w-48 bg-transparent text-xs text-white placeholder-zinc-500 focus:outline-none"
                 aria-label="Search students or courses"
               />
             </div>
@@ -154,7 +189,10 @@ export function TopBar() {
                             className="flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-left text-xs transition-colors hover:bg-white/[0.06]"
                           >
                             <div className="min-w-0">
-                              <p className="truncate font-medium text-white">{s.name}</p>
+                              <p className="truncate font-medium text-white">
+                                {s.name}
+                                {s.regNo ? ` (${s.regNo})` : ''}
+                              </p>
                               <p className="truncate text-[11px] text-zinc-400">
                                 {s.branch} · {s.course1Short}
                                 {s.course2Short ? ` + ${s.course2Short}` : ''}
@@ -210,25 +248,22 @@ export function TopBar() {
             <span>Add Course</span>
           </Link>
 
-          {hasPinConfigured && (
-            <button
-              type="button"
-              onClick={lockSession}
-              title="Lock with 6-digit quick PIN"
-              aria-label="Lock panel"
-              className="inline-flex min-h-[36px] items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] px-2.5 text-zinc-400 transition-colors hover:bg-white/[0.08] hover:text-white shrink-0"
-            >
-              <Lock className="h-3.5 w-3.5" />
-            </button>
-          )}
-
           <button
             type="button"
-            onClick={() => logout()}
+            onClick={() => {
+              const name = activeTrainer?.name || 'Trainer';
+              logout();
+              notify({
+                title: 'TRAINER LOGGED OUT',
+                message: `Signed out of ${name}'s workspace.`,
+                tone: 'info',
+              });
+              navigate('/');
+            }}
             className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-300 whitespace-nowrap shrink-0"
           >
             <LogOut className="h-3.5 w-3.5" />
-            <span>Log out</span>
+            <span>Log Out</span>
           </button>
         </div>
 
@@ -252,7 +287,7 @@ export function TopBar() {
               type="search"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search students or courses..."
+              placeholder="Search students, Reg.No..."
               className="w-full bg-transparent text-sm text-white placeholder-zinc-500 focus:outline-none"
             />
           </div>
@@ -281,6 +316,12 @@ export function TopBar() {
 
           <div className="grid grid-cols-2 gap-2">
             <Link
+              to="/dashboard"
+              className="flex min-h-[44px] items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-sm font-medium text-zinc-200"
+            >
+              Dashboard
+            </Link>
+            <Link
               to="/branches"
               className="flex min-h-[44px] items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-sm font-medium text-zinc-200"
             >
@@ -291,6 +332,12 @@ export function TopBar() {
               className="flex min-h-[44px] items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-sm font-medium text-zinc-200"
             >
               Edit Students
+            </Link>
+            <Link
+              to="/courses/manage"
+              className="flex min-h-[44px] items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-sm font-medium text-zinc-200"
+            >
+              Manage Courses
             </Link>
             <Link
               to="/students/new"
@@ -306,19 +353,22 @@ export function TopBar() {
               <BookPlus className="h-4 w-4" />
               Add Course
             </Link>
-            <Link
-              to="/courses/manage"
-              className="flex min-h-[44px] items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-sm font-medium text-zinc-200"
-            >
-              Manage Courses
-            </Link>
             <button
               type="button"
-              onClick={() => logout()}
-              className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-red-500/25 bg-red-500/10 text-sm font-medium text-red-300"
+              onClick={() => {
+                const name = activeTrainer?.name || 'Trainer';
+                logout();
+                notify({
+                  title: 'TRAINER LOGGED OUT',
+                  message: `Signed out of ${name}'s workspace.`,
+                  tone: 'info',
+                });
+                navigate('/');
+              }}
+              className="col-span-2 flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-red-500/25 bg-red-500/10 text-sm font-medium text-red-300"
             >
               <LogOut className="h-4 w-4" />
-              Log out
+              Log Out
             </button>
           </div>
         </div>

@@ -1,35 +1,91 @@
 {
   "entities": {
-    "UserProfile": {
-      "title": "UserProfile",
-      "description": "Authenticated instructor profile and optional quick-unlock PIN hash.",
+    "Trainer": {
+      "title": "Trainer",
+      "description": "Institute trainer profile displayed on the portal home page.",
       "type": "object",
       "properties": {
-        "uid": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "designation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "branches": {
+          "type": "array",
+          "description": "1 to 2 branch identifiers handled by this trainer."
+        },
+        "branchSchedules": {
+          "type": "object",
+          "description": "Display schedule days per branch."
+        },
+        "softwares": {
+          "type": "array",
+          "description": "Bounded list (max 20) of software short names handled by this trainer."
+        },
+        "ongoingCount": {
+          "type": "number"
+        },
+        "completedCount": {
+          "type": "number"
+        },
+        "attendanceCount": {
+          "type": "number"
+        },
+        "dashboardConfigured": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "name",
+        "designation",
+        "branches",
+        "branchSchedules",
+        "softwares",
+        "ongoingCount",
+        "completedCount",
+        "attendanceCount",
+        "dashboardConfigured",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TrainerCredentials": {
+      "title": "TrainerCredentials",
+      "description": "Salted SHA-256 passkey and recovery secret hashes for trainer passkey access.",
+      "type": "object",
+      "properties": {
+        "trainerId": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
-        "email": {
+        "passkeyHash": {
           "type": "string",
-          "format": "email",
+          "minLength": 64,
+          "maxLength": 128
+        },
+        "recoveryQuestion": {
+          "type": "string",
           "minLength": 3,
-          "maxLength": 254
+          "maxLength": 160
         },
-        "displayName": {
+        "recoveryAnswerHash": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 100
-        },
-        "username": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 60
-        },
-        "pinHash": {
-          "type": "string",
-          "minLength": 0,
+          "minLength": 64,
           "maxLength": 128
         },
         "createdAt": {
@@ -41,14 +97,21 @@
           "format": "date-time"
         }
       },
-      "required": ["uid", "email", "displayName", "username", "createdAt", "updatedAt"]
+      "required": [
+        "trainerId",
+        "passkeyHash",
+        "recoveryQuestion",
+        "recoveryAnswerHash",
+        "createdAt",
+        "updatedAt"
+      ]
     },
     "Course": {
       "title": "Course",
-      "description": "Computer institute course definition with duration and software modules.",
+      "description": "Trainer-scoped course definition with duration and software modules.",
       "type": "object",
       "properties": {
-        "ownerId": {
+        "trainerId": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
@@ -88,7 +151,7 @@
         }
       },
       "required": [
-        "ownerId",
+        "trainerId",
         "shortName",
         "fullName",
         "durationValue",
@@ -101,14 +164,19 @@
     },
     "Student": {
       "title": "Student",
-      "description": "Student admission record assigned to a branch with up to two enrolled courses.",
+      "description": "Trainer-scoped student admission record with optional Reg. No. and dual-course support.",
       "type": "object",
       "properties": {
-        "ownerId": {
+        "trainerId": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "regNo": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 40
         },
         "name": {
           "type": "string",
@@ -198,7 +266,8 @@
         }
       },
       "required": [
-        "ownerId",
+        "trainerId",
+        "regNo",
         "name",
         "branch",
         "course1Id",
@@ -225,7 +294,7 @@
       "description": "Daily attendance status entry for a student on a specific calendar date.",
       "type": "object",
       "properties": {
-        "ownerId": {
+        "trainerId": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
@@ -266,7 +335,7 @@
         }
       },
       "required": [
-        "ownerId",
+        "trainerId",
         "studentId",
         "branch",
         "date",
@@ -278,21 +347,25 @@
     }
   },
   "firestore": {
-    "/users/{userId}": {
-      "schema": { "$ref": "#/entities/UserProfile" },
-      "description": "Private instructor account profile and quick-unlock PIN hash."
+    "/trainers/{trainerId}": {
+      "schema": { "$ref": "#/entities/Trainer" },
+      "description": "Trainer directory cards shown on the home page."
+    },
+    "/trainers/{trainerId}/credentials/{credId}": {
+      "schema": { "$ref": "#/entities/TrainerCredentials" },
+      "description": "Hashed passkey and recovery question/answer for each trainer."
     },
     "/courses/{courseId}": {
       "schema": { "$ref": "#/entities/Course" },
-      "description": "Institute courses created and managed by the authenticated instructor."
+      "description": "Courses created by each trainer."
     },
     "/students/{studentId}": {
       "schema": { "$ref": "#/entities/Student" },
-      "description": "Student enrollment records across Mavelikara and Kayamkulam branches."
+      "description": "Student admissions created and managed by each trainer."
     },
     "/students/{studentId}/attendance/{dateStr}": {
       "schema": { "$ref": "#/entities/AttendanceRecord" },
-      "description": "Daily attendance records nested under each student document."
+      "description": "Daily attendance records nested under each student."
     }
   }
 }

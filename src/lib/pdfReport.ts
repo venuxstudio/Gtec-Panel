@@ -4,26 +4,28 @@ import autoTable from 'jspdf-autotable';
 import { calculateDurationMetrics, formatReadableDate } from './duration';
 import { AttendanceRecord, BRANCHES, Course, Student } from '../types';
 
-function addFooterPageNumbers(doc: jsPDF) {
+function addFooterPageNumbers(
+  doc: jsPDF,
+  trainerName: string,
+  trainerDesignation: string
+) {
   const pageCount = doc.getNumberOfPages();
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
+  const trainerText = trainerDesignation
+    ? `Trainer: ${trainerName} (${trainerDesignation}) · G-TEC Trainer Panel`
+    : `Trainer: ${trainerName} · G-TEC Trainer Panel`;
 
   for (let i = 1; i <= pageCount; i++) {
     doc.setPage(i);
+    doc.setDrawColor(226, 232, 240);
+    doc.line(14, pageHeight - 13, pageWidth - 14, pageHeight - 13);
     doc.setFontSize(8);
-    doc.setTextColor(115, 115, 125);
-    doc.text(
-      'G-TEC MM Panel · Administrative Record',
-      14,
-      pageHeight - 8
-    );
-    doc.text(
-      `Page ${i} of ${pageCount}`,
-      pageWidth - 14,
-      pageHeight - 8,
-      { align: 'right' }
-    );
+    doc.setTextColor(71, 85, 105);
+    doc.text(trainerText, 14, pageHeight - 7.5);
+    doc.text(`Page ${i} of ${pageCount}`, pageWidth - 14, pageHeight - 7.5, {
+      align: 'right',
+    });
   }
 }
 
@@ -33,7 +35,7 @@ function getStudentSoftwareRows(student: Student, courses: Course[]) {
     ? courses.find((c) => c.id === student.course2Id)
     : undefined;
 
-  const list = [
+  return [
     ...(c1?.softwares || []).map((sw) => ({
       key: `c1:${sw.shortName}`,
       courseShort: student.course1Short,
@@ -49,8 +51,6 @@ function getStudentSoftwareRows(student: Student, courses: Course[]) {
       completed: student.completedSoftwares.includes(`c2:${sw.shortName}`),
     })),
   ];
-
-  return list;
 }
 
 function getAttendanceStats(records: AttendanceRecord[]) {
@@ -67,11 +67,22 @@ export function exportStudentPdfReport(params: {
   student: Student;
   courses: Course[];
   attendanceRecords: AttendanceRecord[];
+  trainerName: string;
+  trainerDesignation: string;
+  branchSchedule?: string;
 }) {
-  const { student, courses, attendanceRecords } = params;
+  const {
+    student,
+    courses,
+    attendanceRecords,
+    trainerName,
+    trainerDesignation,
+    branchSchedule,
+  } = params;
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageWidth = doc.internal.pageSize.getWidth();
   const branchInfo = BRANCHES[student.branch];
+  const resolvedSchedule = branchSchedule?.trim() || branchInfo.scheduleLabel;
   const metrics = calculateDurationMetrics(
     student.joiningDate,
     student.totalDurationDays,
@@ -88,7 +99,7 @@ export function exportStudentPdfReport(params: {
   doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(16);
-  doc.text('G-TEC MM Panel', 14, 12);
+  doc.text('G-TEC Trainer Panel', 14, 12);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(10);
@@ -104,7 +115,7 @@ export function exportStudentPdfReport(params: {
     { align: 'right' }
   );
   doc.text(
-    `${branchInfo.name} (${branchInfo.scheduleLabel})`,
+    `${branchInfo.name} (${resolvedSchedule})`,
     pageWidth - 14,
     19,
     { align: 'right' }
@@ -132,10 +143,11 @@ export function exportStudentPdfReport(params: {
       3: { cellWidth: 53 },
     },
     body: [
-      ['Student Name', student.name, 'Branch', `${branchInfo.name} (${branchInfo.scheduleLabel})`],
-      ['Contact', student.contact, 'Status', student.status === 'completed' ? 'Completed' : 'Ongoing'],
+      ['Student Name', student.name, 'Reg. No.', student.regNo || '—'],
+      ['Branch', `${branchInfo.name} (${resolvedSchedule})`, 'Contact', student.contact],
       ['Date of Joining', formatReadableDate(student.joiningDate), 'Est. End Date', formatReadableDate(metrics.endDateStr)],
-      ['Exam Date', student.examDate ? formatReadableDate(student.examDate) : 'Not scheduled', 'Duration Progress', `${metrics.daysLeft}d left · ${metrics.progressPct}% (${metrics.statusLabel})`],
+      ['Exam Date', student.examDate ? formatReadableDate(student.examDate) : 'Not scheduled', 'Status', student.status === 'completed' ? 'Completed' : 'Ongoing'],
+      ['Duration Progress', `${metrics.daysLeft}d left · ${metrics.progressPct}% (${metrics.statusLabel})`, 'Trainer', trainerName],
       [
         'Enrolled Course(s)',
         { content: courseDisplay, colSpan: 3 },
@@ -187,7 +199,6 @@ export function exportStudentPdfReport(params: {
 
   cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
 
-  // Page break check before Attendance Section
   if (cursorY > 235) {
     doc.addPage();
     cursorY = 18;
@@ -248,7 +259,6 @@ export function exportStudentPdfReport(params: {
         : [['—', '—', 'No attendance records logged', '—']],
   });
 
-  // Optional Section 4: Instructor Notes
   if (student.notes && student.notes.trim().length > 0) {
     let notesY =
       (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
@@ -259,7 +269,7 @@ export function exportStudentPdfReport(params: {
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(10.5);
     doc.setTextColor(15, 23, 42);
-    doc.text('4. Instructor Remarks', 14, notesY);
+    doc.text('4. Trainer Remarks', 14, notesY);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
     doc.setTextColor(51, 65, 85);
@@ -267,9 +277,10 @@ export function exportStudentPdfReport(params: {
     doc.text(wrapped, 14, notesY + 5);
   }
 
-  addFooterPageNumbers(doc);
+  addFooterPageNumbers(doc, trainerName, trainerDesignation);
 
-  const safeName = student.name.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'Student';
+  const safeName =
+    student.name.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'Student';
   const todaySlug = format(new Date(), 'yyyy-MM-dd');
   doc.save(`GTEC_Report_${safeName}_${todaySlug}.pdf`);
 }
@@ -281,8 +292,19 @@ export function exportBatchPdfReport(params: {
   students: Student[];
   courses: Course[];
   attendanceByStudentId: Record<string, AttendanceRecord[]>;
+  trainerName: string;
+  trainerDesignation: string;
 }) {
-  const { title, subtitle, filePrefix, students, courses, attendanceByStudentId } = params;
+  const {
+    title,
+    subtitle,
+    filePrefix,
+    students,
+    courses,
+    attendanceByStudentId,
+    trainerName,
+    trainerDesignation,
+  } = params;
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   const pageWidth = doc.internal.pageSize.getWidth();
 
@@ -293,7 +315,7 @@ export function exportBatchPdfReport(params: {
   doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(15);
-  doc.text(`G-TEC MM Panel — ${title}`, 14, 11);
+  doc.text(`G-TEC Trainer Panel — ${title}`, 14, 11);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9.5);
@@ -315,7 +337,6 @@ export function exportBatchPdfReport(params: {
     { align: 'right' }
   );
 
-  // Summary strip
   const ongoingCount = students.filter((s) => s.status === 'ongoing').length;
   const completedCount = students.filter((s) => s.status === 'completed').length;
   const examScheduledCount = students.filter((s) => Boolean(s.examDate)).length;
@@ -342,11 +363,12 @@ export function exportBatchPdfReport(params: {
   autoTable(doc, {
     startY: startTableY,
     theme: 'striped',
-    headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontSize: 8.5 },
-    styles: { fontSize: 8.2, cellPadding: 2.3, textColor: [30, 41, 59] },
+    headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontSize: 8.3 },
+    styles: { fontSize: 8, cellPadding: 2.2, textColor: [30, 41, 59] },
     head: [
       [
         '#',
+        'Reg. No.',
         'Student Name',
         'Branch',
         'Course(s)',
@@ -373,6 +395,7 @@ export function exportBatchPdfReport(params: {
 
             return [
               String(index + 1),
+              student.regNo || '—',
               student.name,
               student.branch,
               student.course2Short
@@ -386,10 +409,10 @@ export function exportBatchPdfReport(params: {
               att.total > 0 ? `${att.rate}% (${att.present + att.late}/${att.total})` : 'No logs',
             ];
           })
-        : [['—', 'No student records match the current selection', '', '', '', '', '', '', '', '']],
+        : [['—', '—', 'No student records match the current selection', '', '', '', '', '', '', '', '']],
   });
 
-  addFooterPageNumbers(doc);
+  addFooterPageNumbers(doc, trainerName, trainerDesignation);
 
   const todaySlug = format(new Date(), 'yyyy-MM-dd');
   doc.save(`${filePrefix}_${todaySlug}.pdf`);

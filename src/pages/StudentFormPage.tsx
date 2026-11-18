@@ -3,14 +3,19 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { addDays, format, parseISO } from 'date-fns';
 import { ArrowLeft, Edit3, Save, Trash2, UserPlus } from 'lucide-react';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { DarkSelect } from '../components/DarkSelect';
+import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
+import { useNotify } from '../context/NotificationContext';
 import { BRANCH_LIST, BranchId, StudentStatus } from '../types';
 
 export function StudentFormPage() {
   const { studentId } = useParams<{ studentId: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const { activeTrainer } = useAuth();
   const { courses, students, addStudent, updateStudent, deleteStudent } = useData();
+  const { notify } = useNotify();
 
   const isEdit = Boolean(studentId);
   const editingStudent = useMemo(
@@ -21,9 +26,10 @@ export function StudentFormPage() {
   const defaultBranch = (
     searchParams.get('branch')?.toUpperCase() === 'KAYAMKULAM'
       ? 'KAYAMKULAM'
-      : 'MAVELIKARA'
+      : activeTrainer?.branches?.[0] || 'MAVELIKARA'
   ) as BranchId;
 
+  const [regNo, setRegNo] = useState('');
   const [name, setName] = useState('');
   const [branch, setBranch] = useState<BranchId>(defaultBranch);
   const [course1Id, setCourse1Id] = useState('');
@@ -41,6 +47,7 @@ export function StudentFormPage() {
 
   useEffect(() => {
     if (editingStudent) {
+      setRegNo(editingStudent.regNo || '');
       setName(editingStudent.name);
       setBranch(editingStudent.branch);
       setCourse1Id(editingStudent.course1Id);
@@ -79,8 +86,16 @@ export function StudentFormPage() {
     e.preventDefault();
     setErrorMsg('');
 
-    if (!course1Id) {
-      setErrorMsg('Please add and select a Course first.');
+    if (!name.trim()) {
+      setErrorMsg('Please enter the student name.');
+      return;
+    }
+    if (contact.trim().length < 5) {
+      setErrorMsg('Please enter a valid contact number (min 5 characters).');
+      return;
+    }
+    if (!course1Id || !courses.some((c) => c.id === course1Id)) {
+      setErrorMsg('Please select a valid Course from your catalog.');
       return;
     }
 
@@ -88,6 +103,7 @@ export function StudentFormPage() {
     try {
       if (isEdit && studentId) {
         await updateStudent(studentId, {
+          regNo,
           name,
           branch,
           course1Id,
@@ -98,9 +114,15 @@ export function StudentFormPage() {
           notes,
           status,
         });
+        notify({
+          title: 'STUDENT UPDATED',
+          message: `${name.trim()} (${branch}) record saved.`,
+          tone: 'success',
+        });
         navigate(`/student/${studentId}`);
       } else {
         await addStudent({
+          regNo,
           name,
           branch,
           course1Id,
@@ -111,10 +133,21 @@ export function StudentFormPage() {
           notes,
           status: 'ongoing',
         });
+        notify({
+          title: 'STUDENT ADDED',
+          message: `${name.trim()} enrolled in ${branch}${selectedCourse1 ? ` · ${selectedCourse1.shortName}` : ''}.`,
+          tone: 'success',
+        });
         navigate(`/branch/${branch}`);
       }
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Unable to save student.');
+      const message = err instanceof Error ? err.message : 'Unable to save student.';
+      setErrorMsg(message);
+      notify({
+        title: 'SAVE FAILED',
+        message,
+        tone: 'error',
+      });
     } finally {
       setBusy(false);
     }
@@ -124,8 +157,20 @@ export function StudentFormPage() {
     if (!studentId) return;
     setDeleting(true);
     try {
+      const removedName = name || 'Student';
       await deleteStudent(studentId);
+      notify({
+        title: 'STUDENT REMOVED',
+        message: `${removedName} and linked attendance logs removed.`,
+        tone: 'warning',
+      });
       navigate('/students/manage');
+    } catch (err) {
+      notify({
+        title: 'REMOVE FAILED',
+        message: err instanceof Error ? err.message : 'Unable to remove student.',
+        tone: 'error',
+      });
     } finally {
       setDeleting(false);
     }
@@ -173,7 +218,21 @@ export function StudentFormPage() {
         </div>
       ) : (
         <form onSubmit={handleSubmit} className="glass-panel rounded-3xl p-6 sm:p-8 space-y-5">
-          <div className="grid gap-5 sm:grid-cols-2">
+          <div className="grid gap-5 sm:grid-cols-3">
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-zinc-300">
+                Reg. No. (Optional)
+              </label>
+              <input
+                type="text"
+                maxLength={40}
+                value={regNo}
+                onChange={(e) => setRegNo(e.target.value)}
+                placeholder="e.g. GT-2026-042"
+                className="min-h-[44px] w-full rounded-xl border border-white/12 bg-white/[0.04] px-3.5 font-mono text-sm text-white placeholder-zinc-500 focus:border-white/35 focus:outline-none"
+              />
+            </div>
+
             <div>
               <label className="mb-1.5 block text-xs font-medium text-zinc-300">
                 Name *
@@ -193,17 +252,21 @@ export function StudentFormPage() {
               <label className="mb-1.5 block text-xs font-medium text-zinc-300">
                 Branch *
               </label>
-              <select
+              <DarkSelect
                 value={branch}
-                onChange={(e) => setBranch(e.target.value as BranchId)}
-                className="min-h-[44px] w-full rounded-xl border border-white/12 bg-[#12161D] px-3.5 text-sm text-white focus:border-white/35 focus:outline-none"
-              >
-                {BRANCH_LIST.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.name} ({b.scheduleLabel})
-                  </option>
-                ))}
-              </select>
+                onChange={(val) => setBranch(val as BranchId)}
+                ariaLabel="Branch"
+                options={BRANCH_LIST.filter(
+                  (b) =>
+                    !activeTrainer?.branches?.length ||
+                    activeTrainer.branches.includes(b.id) ||
+                    editingStudent?.branch === b.id
+                ).map((b) => ({
+                  value: b.id,
+                  label: b.name,
+                  sublabel: activeTrainer?.branchSchedules?.[b.id] || b.scheduleLabel,
+                }))}
+              />
             </div>
           </div>
 
@@ -212,42 +275,40 @@ export function StudentFormPage() {
               <label className="mb-1.5 block text-xs font-medium text-zinc-300">
                 Course *
               </label>
-              <select
-                required
+              <DarkSelect
                 value={course1Id}
-                onChange={(e) => setCourse1Id(e.target.value)}
-                className="min-h-[44px] w-full rounded-xl border border-white/12 bg-[#12161D] px-3.5 text-sm text-white focus:border-white/35 focus:outline-none"
-              >
-                {courses.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.shortName} — {c.fullName} ({c.durationDays}d)
-                  </option>
-                ))}
-              </select>
+                onChange={setCourse1Id}
+                ariaLabel="Primary Course"
+                options={courses.map((c) => ({
+                  value: c.id,
+                  label: `${c.shortName} (${c.durationDays}d)`,
+                  sublabel: c.fullName,
+                }))}
+              />
             </div>
 
             <div>
               <label className="mb-1.5 block text-xs font-medium text-zinc-300">
                 Course 2 (Optional)
               </label>
-              <select
+              <DarkSelect
                 value={course2Id}
-                onChange={(e) => setCourse2Id(e.target.value)}
-                className="min-h-[44px] w-full rounded-xl border border-white/12 bg-[#12161D] px-3.5 text-sm text-white focus:border-white/35 focus:outline-none"
-              >
-                <option value="">None (Single course)</option>
-                {courses
-                  .filter((c) => c.id !== course1Id)
-                  .map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.shortName} — {c.fullName} ({c.durationDays}d)
-                    </option>
-                  ))}
-              </select>
+                onChange={setCourse2Id}
+                ariaLabel="Secondary Course"
+                options={[
+                  { value: '', label: 'None (Single course)' },
+                  ...courses
+                    .filter((c) => c.id !== course1Id)
+                    .map((c) => ({
+                      value: c.id,
+                      label: `${c.shortName} (${c.durationDays}d)`,
+                      sublabel: c.fullName,
+                    })),
+                ]}
+              />
             </div>
           </div>
 
-          {/* Auto-recorded duration preview */}
           {computedTotalDays > 0 && (
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.07] px-4 py-3 text-xs">
               <span className="text-emerald-300">
@@ -311,14 +372,15 @@ export function StudentFormPage() {
               <label className="mb-1.5 block text-xs font-medium text-zinc-300">
                 Enrollment Status
               </label>
-              <select
+              <DarkSelect
                 value={status}
-                onChange={(e) => setStatus(e.target.value as StudentStatus)}
-                className="min-h-[44px] w-full rounded-xl border border-white/12 bg-[#12161D] px-3.5 text-sm text-white focus:border-white/35 focus:outline-none"
-              >
-                <option value="ongoing">Ongoing</option>
-                <option value="completed">Completed</option>
-              </select>
+                onChange={(val) => setStatus(val as StudentStatus)}
+                ariaLabel="Enrollment Status"
+                options={[
+                  { value: 'ongoing', label: 'Ongoing' },
+                  { value: 'completed', label: 'Completed' },
+                ]}
+              />
             </div>
           )}
 
@@ -365,11 +427,7 @@ export function StudentFormPage() {
             >
               {isEdit ? <Save className="h-4 w-4" /> : <UserPlus className="h-4 w-4" />}
               <span>
-                {busy
-                  ? 'Saving...'
-                  : isEdit
-                  ? 'Save Student'
-                  : 'Add Student'}
+                {busy ? 'Saving...' : isEdit ? 'Save Student' : 'Add Student'}
               </span>
             </button>
           </div>

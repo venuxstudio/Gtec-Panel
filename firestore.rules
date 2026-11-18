@@ -1,30 +1,17 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Global Safety Net: Default deny all reads and writes
+    // Global Safety Net
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Shared Hardened Primitives
     function incoming() {
       return request.resource.data;
     }
 
     function existing() {
       return resource.data;
-    }
-
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
-    function isVerifiedUser() {
-      return isSignedIn() && request.auth.token.email_verified == true;
-    }
-
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
     }
 
     function isValidId(id) {
@@ -39,30 +26,60 @@ service cloud.firestore {
       return d is string && (d == '' || isValidDateStr(d));
     }
 
-    // UserProfile Validation
-    function isValidUserProfile(data, userId) {
-      return data.keys().hasAll(['uid', 'email', 'displayName', 'username', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'email', 'displayName', 'username', 'pinHash', 'createdAt', 'updatedAt'])
-        && data.uid is string && data.uid == userId && data.uid == request.auth.uid
-        && data.email is string && data.email.size() >= 3 && data.email.size() <= 254
-        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
-        && data.username is string && data.username.size() >= 1 && data.username.size() <= 60
-        && (!('pinHash' in data) || (data.pinHash is string && data.pinHash.size() <= 128))
+    function isValidTrainer(data) {
+      return data.keys().hasAll([
+          'name', 'designation', 'branches', 'branchSchedules', 'softwares',
+          'ongoingCount', 'completedCount', 'attendanceCount',
+          'dashboardConfigured', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'name', 'designation', 'branches', 'branchSchedules', 'softwares',
+          'ongoingCount', 'completedCount', 'attendanceCount',
+          'dashboardConfigured', 'createdAt', 'updatedAt'
+        ])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.designation is string && data.designation.size() >= 1 && data.designation.size() <= 100
+        && data.branches is list && data.branches.size() >= 1 && data.branches.size() <= 2
+        && data.branches.hasOnly(['MAVELIKARA', 'KAYAMKULAM'])
+        && data.branchSchedules is map
+        && data.branchSchedules.keys().hasOnly(['MAVELIKARA', 'KAYAMKULAM'])
+        && data.softwares is list && data.softwares.size() <= 20
+        && (data.softwares.size() == 0 || (data.softwares[0] is string && data.softwares[0].size() <= 40))
+        && data.ongoingCount is number && data.ongoingCount >= 0 && data.ongoingCount <= 100000
+        && data.completedCount is number && data.completedCount >= 0 && data.completedCount <= 100000
+        && data.attendanceCount is number && data.attendanceCount >= 0 && data.attendanceCount <= 1000000
+        && data.dashboardConfigured is bool
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
 
-    // Course Validation
+    function isValidTrainerCredentials(data, trainerId) {
+      return data.keys().hasAll([
+          'trainerId', 'passkeyHash', 'recoveryQuestion', 'recoveryAnswerHash',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'trainerId', 'passkeyHash', 'recoveryQuestion', 'recoveryAnswerHash',
+          'createdAt', 'updatedAt'
+        ])
+        && data.trainerId is string && data.trainerId == trainerId
+        && data.passkeyHash is string && data.passkeyHash.size() == 64
+        && data.recoveryQuestion is string && data.recoveryQuestion.size() >= 3 && data.recoveryQuestion.size() <= 160
+        && data.recoveryAnswerHash is string && data.recoveryAnswerHash.size() == 64
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     function isValidCourse(data) {
       return data.keys().hasAll([
-          'ownerId', 'shortName', 'fullName', 'durationValue',
+          'trainerId', 'shortName', 'fullName', 'durationValue',
           'durationUnit', 'durationDays', 'softwares', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'ownerId', 'shortName', 'fullName', 'durationValue',
+          'trainerId', 'shortName', 'fullName', 'durationValue',
           'durationUnit', 'durationDays', 'softwares', 'createdAt', 'updatedAt'
         ])
-        && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
+        && data.trainerId is string && isValidId(data.trainerId)
         && data.shortName is string && data.shortName.size() >= 1 && data.shortName.size() <= 30
         && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 160
         && data.durationValue is number && data.durationValue >= 1 && data.durationValue <= 1825
@@ -78,21 +95,21 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
-    // Student Validation
     function isValidStudent(data) {
       return data.keys().hasAll([
-          'ownerId', 'name', 'branch', 'course1Id', 'course1Short', 'course1Full',
+          'trainerId', 'regNo', 'name', 'branch', 'course1Id', 'course1Short', 'course1Full',
           'course1DurationDays', 'course2Id', 'course2Short', 'course2Full',
           'course2DurationDays', 'totalDurationDays', 'joiningDate', 'examDate',
           'contact', 'completedSoftwares', 'status', 'notes', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'ownerId', 'name', 'branch', 'course1Id', 'course1Short', 'course1Full',
+          'trainerId', 'regNo', 'name', 'branch', 'course1Id', 'course1Short', 'course1Full',
           'course1DurationDays', 'course2Id', 'course2Short', 'course2Full',
           'course2DurationDays', 'totalDurationDays', 'joiningDate', 'examDate',
           'contact', 'completedSoftwares', 'status', 'notes', 'createdAt', 'updatedAt'
         ])
-        && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
+        && data.trainerId is string && isValidId(data.trainerId)
+        && data.regNo is string && data.regNo.size() <= 40
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
         && data.branch in ['MAVELIKARA', 'KAYAMKULAM']
         && data.course1Id is string && isValidId(data.course1Id)
@@ -115,15 +132,14 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
-    // Attendance Validation
     function isValidAttendance(data, studentId, dateStr) {
       return data.keys().hasAll([
-          'ownerId', 'studentId', 'branch', 'date', 'status', 'remark', 'createdAt', 'updatedAt'
+          'trainerId', 'studentId', 'branch', 'date', 'status', 'remark', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'ownerId', 'studentId', 'branch', 'date', 'status', 'remark', 'createdAt', 'updatedAt'
+          'trainerId', 'studentId', 'branch', 'date', 'status', 'remark', 'createdAt', 'updatedAt'
         ])
-        && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
+        && data.trainerId is string && isValidId(data.trainerId)
         && data.studentId is string && data.studentId == studentId
         && data.branch in ['MAVELIKARA', 'KAYAMKULAM']
         && data.date is string && data.date == dateStr && isValidDateStr(data.date)
@@ -133,130 +149,144 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
-    // Users Collection (PII isolated to owner)
-    match /users/{userId} {
-      allow get: if isValidId(userId) && isOwner(userId);
-      allow list: if false;
-      allow create: if isVerifiedUser()
-        && isValidId(userId)
-        && isOwner(userId)
-        && isValidUserProfile(incoming(), userId)
+    // Trainers Directory
+    match /trainers/{trainerId} {
+      allow get: if isValidId(trainerId) && existing().name is string;
+      allow list: if resource.data.dashboardConfigured in [true, false];
+      allow create: if isValidId(trainerId)
+        && isValidTrainer(incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isVerifiedUser()
-        && isValidId(userId)
-        && isOwner(userId)
-        && isValidUserProfile(incoming(), userId)
-        && incoming().uid == existing().uid
+      allow update: if isValidId(trainerId)
+        && isValidTrainer(incoming())
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'username', 'pinHash', 'updatedAt']) ||
-          incoming().diff(existing()).affectedKeys().hasOnly(['pinHash', 'updatedAt'])
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'designation', 'branches', 'branchSchedules', 'softwares',
+            'dashboardConfigured', 'updatedAt'
+          ]) ||
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'ongoingCount', 'completedCount', 'attendanceCount', 'updatedAt'
+          ]) ||
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'dashboardConfigured', 'updatedAt'
+          ])
         );
-      allow delete: if false;
+      allow delete: if isValidId(trainerId) && existing().name is string;
+
+      // Credentials Subcollection (Split Collection)
+      match /credentials/{credId} {
+        allow get: if isValidId(trainerId) && credId == 'auth'
+          && exists(/databases/$(database)/documents/trainers/$(trainerId));
+        allow list: if false;
+        allow create: if isValidId(trainerId) && credId == 'auth'
+          && isValidTrainerCredentials(incoming(), trainerId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && (
+            exists(/databases/$(database)/documents/trainers/$(trainerId)) ||
+            existsAfter(/databases/$(database)/documents/trainers/$(trainerId))
+          );
+        allow update: if isValidId(trainerId) && credId == 'auth'
+          && isValidTrainerCredentials(incoming(), trainerId)
+          && incoming().trainerId == existing().trainerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['passkeyHash', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'passkeyHash', 'recoveryQuestion', 'recoveryAnswerHash', 'updatedAt'
+            ])
+          );
+        allow delete: if isValidId(trainerId) && credId == 'auth';
+      }
     }
 
-    // Courses Collection
+    // Courses Collection (Trainer-scoped)
     match /courses/{courseId} {
-      allow get: if isSignedIn() && isValidId(courseId) && existing().ownerId == request.auth.uid;
-      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
-      allow create: if isVerifiedUser()
-        && isValidId(courseId)
+      allow get: if isValidId(courseId) && isValidId(existing().trainerId);
+      allow list: if resource.data.trainerId is string && isValidId(resource.data.trainerId);
+      allow create: if isValidId(courseId)
         && isValidCourse(incoming())
         && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
-      allow update: if isVerifiedUser()
-        && isValidId(courseId)
-        && existing().ownerId == request.auth.uid
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/trainers/$(incoming().trainerId));
+      allow update: if isValidId(courseId)
         && isValidCourse(incoming())
-        && incoming().ownerId == existing().ownerId
+        && incoming().trainerId == existing().trainerId
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'shortName', 'fullName', 'durationValue', 'durationUnit',
           'durationDays', 'softwares', 'updatedAt'
         ]);
-      allow delete: if isVerifiedUser() && isValidId(courseId) && existing().ownerId == request.auth.uid;
+      allow delete: if isValidId(courseId) && isValidId(existing().trainerId);
     }
 
-    // Students Collection
+    // Students Collection (Trainer-scoped)
     match /students/{studentId} {
-      allow get: if isSignedIn() && isValidId(studentId) && existing().ownerId == request.auth.uid;
-      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
-      allow create: if isVerifiedUser()
-        && isValidId(studentId)
+      allow get: if isValidId(studentId) && isValidId(existing().trainerId);
+      allow list: if resource.data.trainerId is string && isValidId(resource.data.trainerId);
+      allow create: if isValidId(studentId)
         && isValidStudent(incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/trainers/$(incoming().trainerId))
         && exists(/databases/$(database)/documents/courses/$(incoming().course1Id))
-        && get(/databases/$(database)/documents/courses/$(incoming().course1Id)).data.ownerId == request.auth.uid
+        && get(/databases/$(database)/documents/courses/$(incoming().course1Id)).data.trainerId == incoming().trainerId
         && (incoming().course2Id == '' || (
           exists(/databases/$(database)/documents/courses/$(incoming().course2Id))
-          && get(/databases/$(database)/documents/courses/$(incoming().course2Id)).data.ownerId == request.auth.uid
+          && get(/databases/$(database)/documents/courses/$(incoming().course2Id)).data.trainerId == incoming().trainerId
         ));
-      allow update: if isVerifiedUser()
-        && isValidId(studentId)
-        && existing().ownerId == request.auth.uid
+      allow update: if isValidId(studentId)
         && isValidStudent(incoming())
-        && incoming().ownerId == existing().ownerId
+        && incoming().trainerId == existing().trainerId
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          // Action: Full edit of student details
           incoming().diff(existing()).affectedKeys().hasOnly([
-            'name', 'branch', 'course1Id', 'course1Short', 'course1Full',
+            'regNo', 'name', 'branch', 'course1Id', 'course1Short', 'course1Full',
             'course1DurationDays', 'course2Id', 'course2Short', 'course2Full',
             'course2DurationDays', 'totalDurationDays', 'joiningDate',
             'examDate', 'contact', 'completedSoftwares', 'status', 'notes', 'updatedAt'
           ]) ||
-          // Action: Toggle completed software or course completion status
           incoming().diff(existing()).affectedKeys().hasOnly([
             'completedSoftwares', 'status', 'updatedAt'
           ]) ||
-          // Action: Update exam date or remarks
           incoming().diff(existing()).affectedKeys().hasOnly([
             'examDate', 'notes', 'updatedAt'
           ])
         );
-      allow delete: if isVerifiedUser() && isValidId(studentId) && existing().ownerId == request.auth.uid;
+      allow delete: if isValidId(studentId) && isValidId(existing().trainerId);
 
-      // Subcollection: Daily Attendance Records (Master Gate)
+      // Attendance Subcollection (Master Gate)
       match /attendance/{dateStr} {
-        allow get: if isSignedIn()
-          && isValidId(studentId)
-          && isValidDateStr(dateStr)
-          && existing().ownerId == request.auth.uid;
-        allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
-        allow create: if isVerifiedUser()
-          && isValidId(studentId)
+        allow get: if isValidId(studentId) && isValidDateStr(dateStr) && isValidId(existing().trainerId);
+        allow list: if resource.data.trainerId is string && isValidId(resource.data.trainerId);
+        allow create: if isValidId(studentId)
           && isValidDateStr(dateStr)
           && isValidAttendance(incoming(), studentId, dateStr)
           && incoming().createdAt == request.time
           && incoming().updatedAt == request.time
           && exists(/databases/$(database)/documents/students/$(studentId))
-          && get(/databases/$(database)/documents/students/$(studentId)).data.ownerId == request.auth.uid;
-        allow update: if isVerifiedUser()
-          && isValidId(studentId)
+          && get(/databases/$(database)/documents/students/$(studentId)).data.trainerId == incoming().trainerId;
+        allow update: if isValidId(studentId)
           && isValidDateStr(dateStr)
           && isValidAttendance(incoming(), studentId, dateStr)
-          && existing().ownerId == request.auth.uid
-          && incoming().ownerId == existing().ownerId
+          && incoming().trainerId == existing().trainerId
           && incoming().studentId == existing().studentId
           && incoming().date == existing().date
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
           && exists(/databases/$(database)/documents/students/$(studentId))
-          && get(/databases/$(database)/documents/students/$(studentId)).data.ownerId == request.auth.uid
+          && get(/databases/$(database)/documents/students/$(studentId)).data.trainerId == incoming().trainerId
           && incoming().diff(existing()).affectedKeys().hasOnly([
             'status', 'remark', 'branch', 'updatedAt'
           ]);
-        allow delete: if isVerifiedUser()
-          && isValidId(studentId)
+        allow delete: if isValidId(studentId)
           && isValidDateStr(dateStr)
-          && existing().ownerId == request.auth.uid
-          && exists(/databases/$(database)/documents/students/$(studentId))
-          && get(/databases/$(database)/documents/students/$(studentId)).data.ownerId == request.auth.uid;
+          && exists(/databases/$(database)/documents/students/$(studentId));
       }
     }
   }

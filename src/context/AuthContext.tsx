@@ -1,335 +1,491 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import {
-  User,
-  createUserWithEmailAndPassword,
-  isSignInWithEmailLink,
-  onAuthStateChanged,
-  reload,
-  sendEmailVerification,
-  sendPasswordResetEmail,
-  sendSignInLinkToEmail,
-  signInWithEmailAndPassword,
-  signInWithEmailLink,
-  signInWithPopup,
-  signOut,
-  updateProfile,
-} from 'firebase/auth';
-import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
-import { OperationType, auth, db, googleProvider, handleFirestoreError } from '../lib/firebase';
-import { hashPin } from '../lib/duration';
-import { UserProfile } from '../types';
+  DocumentReference,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  updateDoc,
+  where,
+  writeBatch,
+} from 'firebase/firestore';
+import { OperationType, db, handleFirestoreError } from '../lib/firebase';
+import { hashSecret, makeDocumentId } from '../lib/duration';
+import { BranchId, Trainer, TrainerCredentials } from '../types';
+
+export interface CreateTrainerInput {
+  name: string;
+  designation: string;
+  branches: BranchId[];
+  branchSchedules: Partial<Record<BranchId, string>>;
+  softwares: string[];
+  passkey: string;
+  recoveryQuestion: string;
+  recoveryAnswer: string;
+}
+
+export interface UpdateTrainerInput {
+  name: string;
+  designation: string;
+  branches: BranchId[];
+  branchSchedules: Partial<Record<BranchId, string>>;
+  softwares: string[];
+  dashboardConfigured?: boolean;
+}
 
 interface AuthContextValue {
-  user: User | null;
-  profile: UserProfile | null;
+  trainers: Trainer[];
+  trainersLoading: boolean;
+  activeTrainer: Trainer | null;
   authReady: boolean;
-  isLocked: boolean;
-  hasPinConfigured: boolean;
-  signInWithGoogle: () => Promise<void>;
-  signInWithEmail: (identifier: string, password: string) => Promise<void>;
-  registerWithEmail: (
-    name: string,
-    username: string,
-    email: string,
-    password: string
-  ) => Promise<void>;
-  sendPasswordReset: (email: string) => Promise<void>;
-  sendEmailSignInLink: (email: string) => Promise<void>;
-  resendVerificationEmail: () => Promise<void>;
-  refreshUserStatus: () => Promise<boolean>;
-  saveQuickPin: (pin: string) => Promise<void>;
-  unlockWithPin: (pin: string) => Promise<boolean>;
-  lockSession: () => void;
-  logout: () => Promise<void>;
+  createTrainer: (input: CreateTrainerInput) => Promise<string>;
+  verifyAndLogin: (
+    trainerId: string,
+    passkey: string
+  ) => Promise<{ ok: boolean; dashboardConfigured: boolean }>;
+  getRecoveryQuestion: (trainerId: string) => Promise<string>;
+  resetPasskeyWithRecovery: (
+    trainerId: string,
+    answer: string,
+    newPasskey: string
+  ) => Promise<{ ok: boolean; dashboardConfigured: boolean; error?: string }>;
+  updateTrainerProfile: (trainerId: string, input: UpdateTrainerInput) => Promise<void>;
+  markDashboardConfigured: (trainerId: string) => Promise<void>;
+  changeTrainerPasskey: (
+    trainerId: string,
+    currentPasskey: string,
+    newPasskey: string
+  ) => Promise<{ ok: boolean; error?: string }>;
+  deleteTrainerAccount: (trainerId: string) => Promise<void>;
+  logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-const EMAIL_LINK_KEY = 'gtec_email_for_signin';
-const USERNAME_MAP_KEY = 'gtec_username_email_map';
-const LOCKED_SESSION_KEY = 'gtec_session_locked';
-
-function getStoredEmailForUsername(identifier: string): string {
-  const trimmed = identifier.trim();
-  if (trimmed.includes('@')) return trimmed;
-  try {
-    const raw = localStorage.getItem(USERNAME_MAP_KEY);
-    if (!raw) return trimmed;
-    const map = JSON.parse(raw) as Record<string, string>;
-    return map[trimmed.toLowerCase()] || trimmed;
-  } catch {
-    return trimmed;
-  }
-}
-
-function saveUsernameEmailMapping(username: string, email: string) {
-  try {
-    const raw = localStorage.getItem(USERNAME_MAP_KEY);
-    const map = raw ? (JSON.parse(raw) as Record<string, string>) : {};
-    map[username.trim().toLowerCase()] = email.trim();
-    localStorage.setItem(USERNAME_MAP_KEY, JSON.stringify(map));
-  } catch {
-    // Ignore storage quota issues
-  }
-}
+const ACTIVE_TRAINER_KEY = 'gtec_active_trainer_id';
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [authReady, setAuthReady] = useState(false);
-  const [isLocked, setIsLocked] = useState<boolean>(() => {
+  const [trainers, setTrainers] = useState<Trainer[]>([]);
+  const [trainersLoading, setTrainersLoading] = useState(true);
+  const [activeTrainerId, setActiveTrainerId] = useState<string | null>(() => {
     try {
-      return localStorage.getItem(LOCKED_SESSION_KEY) === 'true';
+      return sessionStorage.getItem(ACTIVE_TRAINER_KEY);
     } catch {
-      return false;
+      return null;
     }
   });
 
-  const syncUserProfile = useCallback(async (firebaseUser: User, explicitUsername?: string) => {
-    if (!firebaseUser.emailVerified) {
-      setProfile(null);
-      return;
-    }
-
-    const userRef = doc(db, 'users', firebaseUser.uid);
-    let snap;
-    try {
-      snap = await getDoc(userRef);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.GET, `users/${firebaseUser.uid}`);
-    }
-
-    const email = (firebaseUser.email || '').slice(0, 254);
-    const displayName = (firebaseUser.displayName || email.split('@')[0] || 'Instructor').slice(0, 100);
-    const username = (explicitUsername || email.split('@')[0] || 'instructor').slice(0, 60);
-
-    if (email && username) {
-      saveUsernameEmailMapping(username, email);
-    }
-
-    if (!snap.exists()) {
-      const payload = {
-        uid: firebaseUser.uid,
-        email,
-        displayName,
-        username,
-        pinHash: '',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      };
-      try {
-        await setDoc(userRef, payload);
-      } catch (error) {
-        handleFirestoreError(error, OperationType.CREATE, `users/${firebaseUser.uid}`);
+  useEffect(() => {
+    const trainersQuery = query(
+      collection(db, 'trainers'),
+      where('dashboardConfigured', 'in', [true, false])
+    );
+    const unsub = onSnapshot(
+      trainersQuery,
+      (snapshot) => {
+        const list: Trainer[] = snapshot.docs.map((d) => ({
+          ...(d.data() as Omit<Trainer, 'id'>),
+          id: d.id,
+        }));
+        list.sort((a, b) => a.name.localeCompare(b.name));
+        setTrainers(list);
+        setTrainersLoading(false);
+      },
+      (error) => {
+        setTrainersLoading(false);
+        console.error('Trainers listener error:', error);
       }
-      setProfile({
-        uid: firebaseUser.uid,
-        email,
-        displayName,
-        username,
-        pinHash: '',
-      });
-    } else {
-      const data = snap.data() as UserProfile;
-      setProfile(data);
-      if (data.username && data.email) {
-        saveUsernameEmailMapping(data.username, data.email);
-      }
-    }
+    );
+    return () => unsub();
   }, []);
 
-  // Complete passwordless email-link sign-in if returning from email link
+  const activeTrainer = useMemo(
+    () => trainers.find((t) => t.id === activeTrainerId) || null,
+    [trainers, activeTrainerId]
+  );
+
+  // Clear stale session ID if trainer doc was deleted
   useEffect(() => {
-    if (isSignInWithEmailLink(auth, window.location.href)) {
-      let email = '';
+    if (!trainersLoading && activeTrainerId && !activeTrainer) {
+      setActiveTrainerId(null);
       try {
-        email = localStorage.getItem(EMAIL_LINK_KEY) || '';
-      } catch {
-        email = '';
-      }
-      if (email) {
-        signInWithEmailLink(auth, email, window.location.href)
-          .then(() => {
-            try {
-              localStorage.removeItem(EMAIL_LINK_KEY);
-              window.history.replaceState({}, document.title, '/branches');
-            } catch {
-              // ignore
-            }
-          })
-          .catch((err) => {
-            console.error('Email link sign-in failed:', err);
-          });
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      setUser(firebaseUser);
-      if (firebaseUser) {
-        try {
-          await syncUserProfile(firebaseUser);
-        } catch (err) {
-          console.error('Profile sync error:', err);
-        }
-      } else {
-        setProfile(null);
-        setIsLocked(false);
-        try {
-          localStorage.removeItem(LOCKED_SESSION_KEY);
-        } catch {
-          // ignore
-        }
-      }
-      setAuthReady(true);
-    });
-    return () => unsubscribe();
-  }, [syncUserProfile]);
-
-  const signInWithGoogle = async () => {
-    const cred = await signInWithPopup(auth, googleProvider);
-    setIsLocked(false);
-    try {
-      localStorage.removeItem(LOCKED_SESSION_KEY);
-    } catch {
-      // ignore
-    }
-    await syncUserProfile(cred.user);
-  };
-
-  const signInWithEmail = async (identifier: string, password: string) => {
-    const resolvedEmail = getStoredEmailForUsername(identifier);
-    if (!resolvedEmail.includes('@')) {
-      throw new Error('Please enter your registered email address to sign in.');
-    }
-    const cred = await signInWithEmailAndPassword(auth, resolvedEmail, password);
-    setIsLocked(false);
-    try {
-      localStorage.removeItem(LOCKED_SESSION_KEY);
-    } catch {
-      // ignore
-    }
-    await syncUserProfile(cred.user);
-  };
-
-  const registerWithEmail = async (
-    name: string,
-    username: string,
-    email: string,
-    password: string
-  ) => {
-    const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
-    await updateProfile(cred.user, { displayName: name.trim() });
-    saveUsernameEmailMapping(username, email.trim());
-    await sendEmailVerification(cred.user);
-  };
-
-  const sendPasswordReset = async (email: string) => {
-    const resolvedEmail = getStoredEmailForUsername(email);
-    await sendPasswordResetEmail(auth, resolvedEmail);
-  };
-
-  const sendEmailSignInLink = async (email: string) => {
-    const cleanEmail = getStoredEmailForUsername(email);
-    const actionCodeSettings = {
-      url: `${window.location.origin}/login`,
-      handleCodeInApp: true,
-    };
-    await sendSignInLinkToEmail(auth, cleanEmail, actionCodeSettings);
-    try {
-      localStorage.setItem(EMAIL_LINK_KEY, cleanEmail);
-    } catch {
-      // ignore
-    }
-  };
-
-  const resendVerificationEmail = async () => {
-    if (!auth.currentUser) return;
-    await sendEmailVerification(auth.currentUser);
-  };
-
-  const refreshUserStatus = async (): Promise<boolean> => {
-    if (!auth.currentUser) return false;
-    await reload(auth.currentUser);
-    const updated = auth.currentUser;
-    setUser({ ...updated } as User);
-    if (updated.emailVerified) {
-      await syncUserProfile(updated);
-      return true;
-    }
-    return false;
-  };
-
-  const saveQuickPin = async (pin: string) => {
-    if (!user) throw new Error('Must be signed in');
-    const pinHash = await hashPin(pin);
-    const userRef = doc(db, 'users', user.uid);
-    try {
-      await updateDoc(userRef, {
-        pinHash,
-        updatedAt: serverTimestamp(),
-      });
-      setProfile((prev) => (prev ? { ...prev, pinHash } : prev));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
-    }
-  };
-
-  const unlockWithPin = async (pin: string): Promise<boolean> => {
-    if (!profile?.pinHash) return false;
-    const candidate = await hashPin(pin);
-    if (candidate === profile.pinHash) {
-      setIsLocked(false);
-      try {
-        localStorage.removeItem(LOCKED_SESSION_KEY);
+        sessionStorage.removeItem(ACTIVE_TRAINER_KEY);
       } catch {
         // ignore
       }
-      return true;
     }
-    return false;
-  };
+  }, [trainersLoading, activeTrainerId, activeTrainer]);
 
-  const lockSession = () => {
-    setIsLocked(true);
+  const persistSession = (trainerId: string | null) => {
+    setActiveTrainerId(trainerId);
     try {
-      localStorage.setItem(LOCKED_SESSION_KEY, 'true');
+      if (trainerId) {
+        sessionStorage.setItem(ACTIVE_TRAINER_KEY, trainerId);
+      } else {
+        sessionStorage.removeItem(ACTIVE_TRAINER_KEY);
+      }
     } catch {
       // ignore
     }
   };
 
-  const logout = async () => {
-    setIsLocked(false);
-    try {
-      localStorage.removeItem(LOCKED_SESSION_KEY);
-    } catch {
-      // ignore
+  const sanitizeSoftwares = (list: string[]): string[] =>
+    Array.from(
+      new Set(
+        list
+          .map((s) => s.trim().toUpperCase().slice(0, 40))
+          .filter((s) => s.length > 0)
+      )
+    ).slice(0, 20);
+
+  const createTrainer = async (input: CreateTrainerInput): Promise<string> => {
+    const trainerId = makeDocumentId('trn');
+    const passkeyHash = await hashSecret(trainerId, input.passkey);
+    const recoveryAnswerHash = await hashSecret(
+      trainerId,
+      input.recoveryAnswer.trim().toLowerCase()
+    );
+
+    const cleanBranches: BranchId[] =
+      input.branches.length > 0 ? input.branches.slice(0, 2) : ['MAVELIKARA'];
+
+    const cleanSchedules: Partial<Record<BranchId, string>> = {};
+    cleanBranches.forEach((b) => {
+      cleanSchedules[b] =
+        (input.branchSchedules[b] || '').trim() ||
+        (b === 'MAVELIKARA' ? 'Tue, Thu, Fri' : 'Mon, Wed, Sat');
+    });
+
+    const cleanSoftwares = sanitizeSoftwares(input.softwares);
+    const cleanName = input.name.trim().slice(0, 100);
+    const cleanDesignation = input.designation.trim().slice(0, 100);
+    if (!cleanName || !cleanDesignation) {
+      throw new Error('Trainer name and designation cannot be empty.');
     }
-    await signOut(auth);
+
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'trainers', trainerId), {
+      name: cleanName,
+      designation: cleanDesignation,
+      branches: cleanBranches,
+      branchSchedules: cleanSchedules,
+      softwares: cleanSoftwares,
+      ongoingCount: 0,
+      completedCount: 0,
+      attendanceCount: 0,
+      dashboardConfigured: false,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+
+    batch.set(doc(db, 'trainers', trainerId, 'credentials', 'auth'), {
+      trainerId,
+      passkeyHash,
+      recoveryQuestion: input.recoveryQuestion.trim().slice(0, 160),
+      recoveryAnswerHash,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+
+    try {
+      await Promise.race([
+        batch.commit(),
+        new Promise<never>((_, reject) =>
+          window.setTimeout(
+            () =>
+              reject(
+                new Error(
+                  'Timed out connecting to Firestore. Check your internet connection and try again.'
+                )
+              ),
+            15000
+          )
+        ),
+      ]);
+
+      // Optimistically show the newly created trainer card immediately
+      const optimisticTrainer: Trainer = {
+        id: trainerId,
+        name: cleanName,
+        designation: cleanDesignation,
+        branches: cleanBranches,
+        branchSchedules: cleanSchedules,
+        softwares: cleanSoftwares,
+        ongoingCount: 0,
+        completedCount: 0,
+        attendanceCount: 0,
+        dashboardConfigured: false,
+      };
+      setTrainers((prev) => {
+        if (prev.some((t) => t.id === trainerId)) return prev;
+        return [...prev, optimisticTrainer].sort((a, b) =>
+          a.name.localeCompare(b.name)
+        );
+      });
+      return trainerId;
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Timed out')) {
+        throw error;
+      }
+      handleFirestoreError(error, OperationType.CREATE, `trainers/${trainerId}`);
+    }
   };
 
-  const hasPinConfigured = Boolean(profile?.pinHash && profile.pinHash.length > 0);
+  const verifyAndLogin = async (
+    trainerId: string,
+    passkey: string
+  ): Promise<{ ok: boolean; dashboardConfigured: boolean }> => {
+    const path = `trainers/${trainerId}/credentials/auth`;
+    let snap;
+    try {
+      snap = await getDoc(doc(db, path));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, path);
+    }
+
+    if (!snap.exists()) {
+      return { ok: false, dashboardConfigured: false };
+    }
+
+    const creds = snap.data() as TrainerCredentials;
+    const candidateHash = await hashSecret(trainerId, passkey);
+    if (candidateHash !== creds.passkeyHash) {
+      return { ok: false, dashboardConfigured: false };
+    }
+
+    const trainer = trainers.find((t) => t.id === trainerId);
+    persistSession(trainerId);
+    return {
+      ok: true,
+      dashboardConfigured: Boolean(trainer?.dashboardConfigured),
+    };
+  };
+
+  const getRecoveryQuestion = async (trainerId: string): Promise<string> => {
+    const path = `trainers/${trainerId}/credentials/auth`;
+    try {
+      const snap = await getDoc(doc(db, path));
+      if (!snap.exists()) return '';
+      const creds = snap.data() as TrainerCredentials;
+      return creds.recoveryQuestion || '';
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, path);
+    }
+  };
+
+  const resetPasskeyWithRecovery = async (
+    trainerId: string,
+    answer: string,
+    newPasskey: string
+  ): Promise<{ ok: boolean; dashboardConfigured: boolean; error?: string }> => {
+    if (newPasskey.trim().length < 4) {
+      return {
+        ok: false,
+        dashboardConfigured: false,
+        error: 'New passkey must be at least 4 characters.',
+      };
+    }
+
+    const path = `trainers/${trainerId}/credentials/auth`;
+    let snap;
+    try {
+      snap = await getDoc(doc(db, path));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, path);
+    }
+
+    if (!snap.exists()) {
+      return {
+        ok: false,
+        dashboardConfigured: false,
+        error: 'Trainer credentials not found.',
+      };
+    }
+
+    const creds = snap.data() as TrainerCredentials;
+    const candidateAnswerHash = await hashSecret(
+      trainerId,
+      answer.trim().toLowerCase()
+    );
+    if (candidateAnswerHash !== creds.recoveryAnswerHash) {
+      return {
+        ok: false,
+        dashboardConfigured: false,
+        error: 'Recovery answer does not match. Please try again.',
+      };
+    }
+
+    const newPasskeyHash = await hashSecret(trainerId, newPasskey);
+    try {
+      await updateDoc(doc(db, path), {
+        passkeyHash: newPasskeyHash,
+        updatedAt: serverTimestamp(),
+      });
+      const trainer = trainers.find((t) => t.id === trainerId);
+      persistSession(trainerId);
+      return {
+        ok: true,
+        dashboardConfigured: Boolean(trainer?.dashboardConfigured),
+      };
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, path);
+    }
+  };
+
+  const updateTrainerProfile = async (
+    trainerId: string,
+    input: UpdateTrainerInput
+  ) => {
+    const cleanBranches: BranchId[] =
+      input.branches.length > 0 ? input.branches.slice(0, 2) : ['MAVELIKARA'];
+
+    const cleanSchedules: Partial<Record<BranchId, string>> = {};
+    cleanBranches.forEach((b) => {
+      cleanSchedules[b] =
+        (input.branchSchedules[b] || '').trim() ||
+        (b === 'MAVELIKARA' ? 'Tue, Thu, Fri' : 'Mon, Wed, Sat');
+    });
+
+    const cleanName = input.name.trim().slice(0, 100);
+    const cleanDesignation = input.designation.trim().slice(0, 100);
+    if (!cleanName || !cleanDesignation) {
+      throw new Error('Trainer name and designation cannot be empty.');
+    }
+
+    const payload: Record<string, unknown> = {
+      name: cleanName,
+      designation: cleanDesignation,
+      branches: cleanBranches,
+      branchSchedules: cleanSchedules,
+      softwares: sanitizeSoftwares(input.softwares),
+      updatedAt: serverTimestamp(),
+    };
+    if (typeof input.dashboardConfigured === 'boolean') {
+      payload.dashboardConfigured = input.dashboardConfigured;
+    }
+
+    try {
+      await updateDoc(doc(db, 'trainers', trainerId), payload);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `trainers/${trainerId}`);
+    }
+  };
+
+  const markDashboardConfigured = async (trainerId: string) => {
+    const trainer = trainers.find((t) => t.id === trainerId);
+    if (trainer?.dashboardConfigured) return;
+    try {
+      await updateDoc(doc(db, 'trainers', trainerId), {
+        dashboardConfigured: true,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `trainers/${trainerId}`);
+    }
+  };
+
+  const changeTrainerPasskey = async (
+    trainerId: string,
+    currentPasskey: string,
+    newPasskey: string
+  ): Promise<{ ok: boolean; error?: string }> => {
+    if (newPasskey.trim().length < 4) {
+      return { ok: false, error: 'New passkey must be at least 4 characters.' };
+    }
+    const path = `trainers/${trainerId}/credentials/auth`;
+    let snap;
+    try {
+      snap = await getDoc(doc(db, path));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, path);
+    }
+    if (!snap.exists()) return { ok: false, error: 'Credentials not found.' };
+    const creds = snap.data() as TrainerCredentials;
+    const currentHash = await hashSecret(trainerId, currentPasskey);
+    if (currentHash !== creds.passkeyHash) {
+      return { ok: false, error: 'Current passkey is incorrect.' };
+    }
+    const nextHash = await hashSecret(trainerId, newPasskey);
+    try {
+      await updateDoc(doc(db, path), {
+        passkeyHash: nextHash,
+        updatedAt: serverTimestamp(),
+      });
+      return { ok: true };
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, path);
+    }
+  };
+
+  const deleteTrainerAccount = async (trainerId: string) => {
+    try {
+      const refsToDelete: DocumentReference[] = [];
+
+      const [studentsSnap, coursesSnap] = await Promise.all([
+        getDocs(query(collection(db, 'students'), where('trainerId', '==', trainerId))),
+        getDocs(query(collection(db, 'courses'), where('trainerId', '==', trainerId))),
+      ]);
+
+      // Delete each student's attendance records BEFORE deleting the student doc
+      for (let i = 0; i < studentsSnap.docs.length; i += 10) {
+        const chunk = studentsSnap.docs.slice(i, i + 10);
+        const attSnaps = await Promise.all(
+          chunk.map((sDoc) =>
+            getDocs(
+              query(
+                collection(db, 'students', sDoc.id, 'attendance'),
+                where('trainerId', '==', trainerId)
+              )
+            )
+          )
+        );
+        attSnaps.forEach((snap) => {
+          snap.docs.forEach((d) => refsToDelete.push(d.ref));
+        });
+      }
+
+      studentsSnap.docs.forEach((d) => refsToDelete.push(d.ref));
+      coursesSnap.docs.forEach((d) => refsToDelete.push(d.ref));
+      refsToDelete.push(doc(db, 'trainers', trainerId, 'credentials', 'auth'));
+      refsToDelete.push(doc(db, 'trainers', trainerId));
+
+      const BATCH_LIMIT = 400;
+      for (let i = 0; i < refsToDelete.length; i += BATCH_LIMIT) {
+        const batch = writeBatch(db);
+        refsToDelete.slice(i, i + BATCH_LIMIT).forEach((ref) => batch.delete(ref));
+        await batch.commit();
+      }
+
+      if (activeTrainerId === trainerId) {
+        persistSession(null);
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `trainers/${trainerId}`);
+    }
+  };
+
+  const logout = () => {
+    persistSession(null);
+  };
 
   return (
     <AuthContext.Provider
       value={{
-        user,
-        profile,
-        authReady,
-        isLocked,
-        hasPinConfigured,
-        signInWithGoogle,
-        signInWithEmail,
-        registerWithEmail,
-        sendPasswordReset,
-        sendEmailSignInLink,
-        resendVerificationEmail,
-        refreshUserStatus,
-        saveQuickPin,
-        unlockWithPin,
-        lockSession,
+        trainers,
+        trainersLoading,
+        activeTrainer,
+        authReady: !trainersLoading,
+        createTrainer,
+        verifyAndLogin,
+        getRecoveryQuestion,
+        resetPasskeyWithRecovery,
+        updateTrainerProfile,
+        markDashboardConfigured,
+        changeTrainerPasskey,
+        deleteTrainerAccount,
         logout,
       }}
     >

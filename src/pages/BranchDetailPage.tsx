@@ -10,26 +10,35 @@ import {
   UserPlus,
   X,
 } from 'lucide-react';
+import { DarkSelect } from '../components/DarkSelect';
 import { DurationProgressBar } from '../components/DurationProgressBar';
+import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
-import { calculateDurationMetrics, isBranchClassDay } from '../lib/duration';
-import { exportBatchPdfReport } from '../lib/pdfReport';
+import { useNotify } from '../context/NotificationContext';
+import {
+  calculateDurationMetrics,
+  fetchInChunks,
+  isBranchClassDay,
+} from '../lib/duration';
 import { AttendanceRecord, AttendanceStatus, BRANCHES, BranchId, Student } from '../types';
 
 export function BranchDetailPage() {
   const { branchId } = useParams<{ branchId: string }>();
   const navigate = useNavigate();
+  const { activeTrainer } = useAuth();
   const { students, courses, loading, markAttendance, fetchStudentAttendance } = useData();
+  const { notify } = useNotify();
 
   const normalizedId: BranchId =
     branchId?.toUpperCase() === 'KAYAMKULAM' ? 'KAYAMKULAM' : 'MAVELIKARA';
   const branch = BRANCHES[normalizedId];
+  const scheduleLabel =
+    activeTrainer?.branchSchedules?.[normalizedId] || branch.scheduleLabel;
 
   const [queryText, setQueryText] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'ongoing' | 'completed'>('all');
   const [courseFilter, setCourseFilter] = useState<string>('all');
 
-  // Quick Daily Roll-Call Drawer
   const [rollCallOpen, setRollCallOpen] = useState(false);
   const [rollDate, setRollDate] = useState(() => format(new Date(), 'yyyy-MM-dd'));
   const [markedMap, setMarkedMap] = useState<Record<string, AttendanceStatus>>({});
@@ -61,6 +70,7 @@ export function BranchDetailPage() {
       if (!q) return true;
       return (
         s.name.toLowerCase().includes(q) ||
+        s.regNo.toLowerCase().includes(q) ||
         s.course1Short.toLowerCase().includes(q) ||
         s.course2Short.toLowerCase().includes(q) ||
         s.contact.toLowerCase().includes(q)
@@ -102,6 +112,17 @@ export function BranchDetailPage() {
     try {
       await markAttendance(student, rollDate, status, '');
       setMarkedMap((prev) => ({ ...prev, [student.id]: status }));
+      notify({
+        title: 'ATTENDANCE RECORDED',
+        message: `${student.name} marked ${status} for ${rollDate}.`,
+        tone: 'success',
+      });
+    } catch (err) {
+      notify({
+        title: 'ATTENDANCE FAILED',
+        message: err instanceof Error ? err.message : 'Unable to save attendance.',
+        tone: 'error',
+      });
     } finally {
       setSavingId(null);
     }
@@ -111,34 +132,49 @@ export function BranchDetailPage() {
     if (filteredStudents.length === 0) return;
     setExportingPdf(true);
     try {
-      const entries = await Promise.all(
-        filteredStudents.map(async (s) => {
+      const entries = await fetchInChunks(
+        filteredStudents,
+        async (s) => {
           const recs = await fetchStudentAttendance(s.id);
           return [s.id, recs] as const;
-        })
+        },
+        10
       );
       const attendanceByStudentId: Record<string, AttendanceRecord[]> = {};
       entries.forEach(([id, recs]) => {
         attendanceByStudentId[id] = recs;
       });
+      const { exportBatchPdfReport } = await import('../lib/pdfReport');
       exportBatchPdfReport({
         title: `${branch.name} Branch Report`,
-        subtitle: `Schedule: ${branch.scheduleLabel} · Attendance & Course Progress Summary`,
+        subtitle: `Schedule: ${scheduleLabel} · Attendance & Course Progress Summary`,
         filePrefix: `GTEC_${branch.name}_Report`,
         students: filteredStudents,
         courses,
         attendanceByStudentId,
+        trainerName: activeTrainer?.name || 'Trainer',
+        trainerDesignation: activeTrainer?.designation || '',
+      });
+      notify({
+        title: 'PDF REPORT DOWNLOADED',
+        message: `${branch.name} report (${filteredStudents.length} students) exported.`,
+        tone: 'info',
+      });
+    } catch (err) {
+      notify({
+        title: 'PDF EXPORT FAILED',
+        message: err instanceof Error ? err.message : 'Could not generate PDF report.',
+        tone: 'error',
       });
     } finally {
       setExportingPdf(false);
     }
   };
 
-  const isClassToday = isBranchClassDay(normalizedId, new Date());
+  const isClassToday = isBranchClassDay(normalizedId, new Date(), scheduleLabel);
 
   return (
     <div className="space-y-6">
-      {/* Breadcrumb & Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <Link
@@ -152,7 +188,7 @@ export function BranchDetailPage() {
             <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
               {branch.name}
             </h1>
-            <span className="font-mono text-xs text-zinc-400">{branch.scheduleLabel}</span>
+            <span className="font-mono text-xs text-zinc-400">{scheduleLabel}</span>
             {isClassToday && (
               <span className="text-xs font-medium text-emerald-400">· Class Day</span>
             )}
@@ -239,7 +275,14 @@ export function BranchDetailPage() {
                       className="flex flex-col gap-2 rounded-xl border border-white/[0.07] bg-black/30 px-3.5 py-2.5 sm:flex-row sm:items-center sm:justify-between"
                     >
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-white">{s.name}</p>
+                        <p className="truncate text-sm font-medium text-white">
+                          {s.name}
+                          {s.regNo && (
+                            <span className="ml-2 font-mono text-xs text-zinc-400">
+                              #{s.regNo}
+                            </span>
+                          )}
+                        </p>
                         <p className="text-xs text-zinc-400">
                           {s.course1Short}
                           {s.course2Short ? ` + ${s.course2Short}` : ''}
@@ -283,7 +326,7 @@ export function BranchDetailPage() {
             type="search"
             value={queryText}
             onChange={(e) => setQueryText(e.target.value)}
-            placeholder="Filter by student, course, or phone..."
+            placeholder="Filter by name, Reg.No., course, phone..."
             className="min-h-[42px] w-full rounded-xl border border-white/12 bg-white/[0.04] pl-10 pr-4 text-sm text-white placeholder-zinc-500 focus:border-white/30 focus:outline-none"
           />
         </div>
@@ -306,19 +349,20 @@ export function BranchDetailPage() {
             ))}
           </div>
 
-          <select
+          <DarkSelect
             value={courseFilter}
-            onChange={(e) => setCourseFilter(e.target.value)}
-            aria-label="Filter by course"
-            className="min-h-[42px] rounded-xl border border-white/12 bg-[#12161D] px-3 text-xs font-medium text-zinc-200 focus:border-white/30 focus:outline-none"
-          >
-            <option value="all">All Courses</option>
-            {courses.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.shortName} — {c.fullName}
-              </option>
-            ))}
-          </select>
+            onChange={setCourseFilter}
+            ariaLabel="Filter by course"
+            className="w-52"
+            options={[
+              { value: 'all', label: 'All Courses' },
+              ...courses.map((c) => ({
+                value: c.id,
+                label: c.shortName,
+                sublabel: c.fullName,
+              })),
+            ]}
+          />
         </div>
       </div>
 
@@ -326,10 +370,7 @@ export function BranchDetailPage() {
       {loading ? (
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {[1, 2, 3].map((i) => (
-            <div
-              key={i}
-              className="glass-panel h-52 animate-pulse rounded-2xl p-5"
-            />
+            <div key={i} className="glass-panel h-52 animate-pulse rounded-2xl p-5" />
           ))}
         </div>
       ) : filteredStudents.length === 0 ? (
@@ -374,9 +415,16 @@ export function BranchDetailPage() {
                 <div>
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <h3 className="truncate text-lg font-semibold text-white">
-                        {student.name}
-                      </h3>
+                      <div className="flex items-baseline gap-2">
+                        <h3 className="truncate text-lg font-semibold text-white">
+                          {student.name}
+                        </h3>
+                        {student.regNo && (
+                          <span className="font-mono text-[11px] text-zinc-400 shrink-0">
+                            {student.regNo}
+                          </span>
+                        )}
+                      </div>
                       <p className="mt-0.5 text-xs font-medium text-emerald-400">
                         {student.course1Short}
                         {student.course2Short ? ` + ${student.course2Short}` : ''}
@@ -385,7 +433,6 @@ export function BranchDetailPage() {
                     </div>
                   </div>
 
-                  {/* Software short names list (unboxed clean inline typography with completion color cues) */}
                   <div className="mt-4">
                     <p className="mb-1.5 text-[11px] font-medium text-zinc-500">
                       Softwares ({swChips.filter((c) => c.completed).length}/{swChips.length} completed)

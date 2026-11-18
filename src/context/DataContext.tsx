@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import {
   collection,
   deleteDoc,
@@ -35,6 +35,7 @@ export interface CourseInput {
 }
 
 export interface StudentInput {
+  regNo: string;
   name: string;
   branch: BranchId;
   course1Id: string;
@@ -53,7 +54,7 @@ interface DataContextValue {
   addCourse: (input: CourseInput) => Promise<string>;
   updateCourse: (courseId: string, input: CourseInput) => Promise<void>;
   deleteCourse: (courseId: string) => Promise<void>;
-  importStandardCourses: () => Promise<void>;
+  importStandardCourses: () => Promise<{ addedCount: number }>;
   addStudent: (input: StudentInput) => Promise<string>;
   updateStudent: (studentId: string, input: StudentInput) => Promise<void>;
   deleteStudent: (studentId: string) => Promise<void>;
@@ -72,16 +73,23 @@ interface DataContextValue {
 const DataContext = createContext<DataContextValue | null>(null);
 
 export function DataProvider({ children }: { children: React.ReactNode }) {
-  const { user, authReady } = useAuth();
+  const { activeTrainer, authReady } = useAuth();
   const [courses, setCourses] = useState<Course[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const latestAttendanceCountRef = useRef<number>(0);
+
+  const trainerId = activeTrainer?.id || null;
+
+  useEffect(() => {
+    latestAttendanceCountRef.current = activeTrainer?.attendanceCount || 0;
+  }, [activeTrainer?.id, activeTrainer?.attendanceCount]);
 
   useEffect(() => {
     if (!authReady) return;
-    if (!user || !user.emailVerified) {
-      setCourses([]);
-      setStudents([]);
+    setCourses([]);
+    setStudents([]);
+    if (!trainerId) {
       setLoading(false);
       return;
     }
@@ -98,7 +106,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
     const coursesQuery = query(
       collection(db, 'courses'),
-      where('ownerId', '==', user.uid)
+      where('trainerId', '==', trainerId)
     );
     const unsubCourses = onSnapshot(
       coursesQuery,
@@ -121,7 +129,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
     const studentsQuery = query(
       collection(db, 'students'),
-      where('ownerId', '==', user.uid)
+      where('trainerId', '==', trainerId)
     );
     const unsubStudents = onSnapshot(
       studentsQuery,
@@ -146,7 +154,28 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       unsubCourses();
       unsubStudents();
     };
-  }, [authReady, user]);
+  }, [authReady, trainerId]);
+
+  const syncTrainerStats = useCallback(
+    async (nextStudentsList: Student[], attendanceDelta = 0) => {
+      if (!trainerId) return;
+      const ongoingCount = nextStudentsList.filter((s) => s.status === 'ongoing').length;
+      const completedCount = nextStudentsList.filter((s) => s.status === 'completed').length;
+      const nextAttCount = Math.max(0, latestAttendanceCountRef.current + attendanceDelta);
+      latestAttendanceCountRef.current = nextAttCount;
+      try {
+        await updateDoc(doc(db, 'trainers', trainerId), {
+          ongoingCount,
+          completedCount,
+          attendanceCount: nextAttCount,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `trainers/${trainerId}`);
+      }
+    },
+    [trainerId]
+  );
 
   const sanitizeSoftwares = (items: SoftwareItem[]): SoftwareItem[] => {
     return items
@@ -159,7 +188,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   };
 
   const addCourse = async (input: CourseInput): Promise<string> => {
-    if (!user) throw new Error('Not authenticated');
+    if (!trainerId) throw new Error('No active trainer session');
     const cleanSoftwares = sanitizeSoftwares(input.softwares);
     if (cleanSoftwares.length === 0) {
       throw new Error('Please add at least one software module with full and short names.');
@@ -167,7 +196,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     const courseId = makeDocumentId('crs');
     const durationDays = durationToDays(input.durationValue, input.durationUnit);
     const payload = {
-      ownerId: user.uid,
+      trainerId,
       shortName: input.shortName.trim().toUpperCase().slice(0, 30),
       fullName: input.fullName.trim().slice(0, 160),
       durationValue: Math.max(1, Math.min(1825, Math.round(input.durationValue || 1))),
@@ -186,7 +215,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   };
 
   const updateCourse = async (courseId: string, input: CourseInput) => {
-    if (!user) throw new Error('Not authenticated');
+    if (!trainerId) throw new Error('No active trainer session');
     const cleanSoftwares = sanitizeSoftwares(input.softwares);
     if (cleanSoftwares.length === 0) {
       throw new Error('Please add at least one software module.');
@@ -209,7 +238,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   };
 
   const deleteCourse = async (courseId: string) => {
-    if (!user) throw new Error('Not authenticated');
+    if (!trainerId) throw new Error('No active trainer session');
     try {
       await deleteDoc(doc(db, 'courses', courseId));
     } catch (error) {
@@ -217,19 +246,19 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const importStandardCourses = async () => {
-    if (!user) throw new Error('Not authenticated');
+  const importStandardCourses = async (): Promise<{ addedCount: number }> => {
+    if (!trainerId) throw new Error('No active trainer session');
     const existingShorts = new Set(courses.map((c) => c.shortName.toUpperCase()));
     const toCreate = STANDARD_GTEC_COURSES.filter(
       (tpl) => !existingShorts.has(tpl.shortName.toUpperCase())
     );
-    if (toCreate.length === 0) return;
+    if (toCreate.length === 0) return { addedCount: 0 };
 
     const batch = writeBatch(db);
     for (const tpl of toCreate) {
       const courseId = makeDocumentId('crs');
       batch.set(doc(db, 'courses', courseId), {
-        ownerId: user.uid,
+        trainerId,
         shortName: tpl.shortName,
         fullName: tpl.fullName,
         durationValue: tpl.durationValue,
@@ -242,6 +271,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     }
     try {
       await batch.commit();
+      return { addedCount: toCreate.length };
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, 'courses');
     }
@@ -250,7 +280,10 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const resolveCourseFields = (course1Id: string, course2Id: string) => {
     const c1 = courses.find((c) => c.id === course1Id);
     if (!c1) throw new Error('Selected primary course does not exist.');
-    const c2 = course2Id && course2Id !== course1Id ? courses.find((c) => c.id === course2Id) : undefined;
+    const c2 =
+      course2Id && course2Id !== course1Id
+        ? courses.find((c) => c.id === course2Id)
+        : undefined;
 
     const c1Days = Math.max(1, c1.durationDays);
     const c2Days = c2 ? Math.max(1, c2.durationDays) : 0;
@@ -270,11 +303,13 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   };
 
   const addStudent = async (input: StudentInput): Promise<string> => {
-    if (!user) throw new Error('Not authenticated');
+    if (!trainerId) throw new Error('No active trainer session');
     const resolved = resolveCourseFields(input.course1Id, input.course2Id);
     const studentId = makeDocumentId('stu');
+    const statusValue: StudentStatus = input.status || 'ongoing';
     const payload = {
-      ownerId: user.uid,
+      trainerId,
+      regNo: (input.regNo || '').trim().slice(0, 40),
       name: input.name.trim().slice(0, 120),
       branch: input.branch,
       ...resolved,
@@ -282,13 +317,15 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       examDate: input.examDate || '',
       contact: input.contact.trim().slice(0, 30),
       completedSoftwares: [] as string[],
-      status: input.status || 'ongoing',
+      status: statusValue,
       notes: (input.notes || '').trim().slice(0, 500),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
     try {
       await setDoc(doc(db, 'students', studentId), payload);
+      const nextList = [...students, { ...payload, id: studentId } as Student];
+      await syncTrainerStats(nextList, 0);
       return studentId;
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, `students/${studentId}`);
@@ -296,10 +333,12 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   };
 
   const updateStudent = async (studentId: string, input: StudentInput) => {
-    if (!user) throw new Error('Not authenticated');
+    if (!trainerId) throw new Error('No active trainer session');
     const resolved = resolveCourseFields(input.course1Id, input.course2Id);
     const existing = students.find((s) => s.id === studentId);
+    const nextStatus = input.status || existing?.status || 'ongoing';
     const payload = {
+      regNo: (input.regNo || '').trim().slice(0, 40),
       name: input.name.trim().slice(0, 120),
       branch: input.branch,
       ...resolved,
@@ -307,38 +346,46 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       examDate: input.examDate || '',
       contact: input.contact.trim().slice(0, 30),
       completedSoftwares: (existing?.completedSoftwares || []).slice(0, 24),
-      status: input.status || existing?.status || 'ongoing',
+      status: nextStatus,
       notes: (input.notes || '').trim().slice(0, 500),
       updatedAt: serverTimestamp(),
     };
     try {
       await updateDoc(doc(db, 'students', studentId), payload);
+      const nextList = students.map((s) =>
+        s.id === studentId ? { ...s, status: nextStatus } : s
+      );
+      await syncTrainerStats(nextList, 0);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `students/${studentId}`);
     }
   };
 
   const deleteStudent = async (studentId: string) => {
-    if (!user) throw new Error('Not authenticated');
+    if (!trainerId) throw new Error('No active trainer session');
     try {
-      // Remove attendance subcollection records first to prevent orphaned docs
       const attSnap = await getDocs(
         query(
           collection(db, 'students', studentId, 'attendance'),
-          where('ownerId', '==', user.uid)
+          where('trainerId', '==', trainerId)
         )
       );
-      const batch = writeBatch(db);
-      attSnap.docs.forEach((d) => batch.delete(d.ref));
-      batch.delete(doc(db, 'students', studentId));
-      await batch.commit();
+      const refsToDelete = [...attSnap.docs.map((d) => d.ref), doc(db, 'students', studentId)];
+      const BATCH_LIMIT = 400;
+      for (let i = 0; i < refsToDelete.length; i += BATCH_LIMIT) {
+        const batch = writeBatch(db);
+        refsToDelete.slice(i, i + BATCH_LIMIT).forEach((ref) => batch.delete(ref));
+        await batch.commit();
+      }
+      const nextList = students.filter((s) => s.id !== studentId);
+      await syncTrainerStats(nextList, -attSnap.size);
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `students/${studentId}`);
     }
   };
 
   const toggleStudentSoftware = async (student: Student, softwareKey: string) => {
-    if (!user) throw new Error('Not authenticated');
+    if (!trainerId) throw new Error('No active trainer session');
     const exists = student.completedSoftwares.includes(softwareKey);
     const next = exists
       ? student.completedSoftwares.filter((k) => k !== softwareKey)
@@ -355,7 +402,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   };
 
   const updateStudentStatus = async (studentId: string, status: StudentStatus) => {
-    if (!user) throw new Error('Not authenticated');
+    if (!trainerId) throw new Error('No active trainer session');
     const target = students.find((s) => s.id === studentId);
     try {
       await updateDoc(doc(db, 'students', studentId), {
@@ -363,13 +410,17 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         status,
         updatedAt: serverTimestamp(),
       });
+      const nextList = students.map((s) =>
+        s.id === studentId ? { ...s, status } : s
+      );
+      await syncTrainerStats(nextList, 0);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `students/${studentId}`);
     }
   };
 
   const updateStudentExamDate = async (studentId: string, examDate: string, notes: string) => {
-    if (!user) throw new Error('Not authenticated');
+    if (!trainerId) throw new Error('No active trainer session');
     try {
       await updateDoc(doc(db, 'students', studentId), {
         examDate: examDate || '',
@@ -387,19 +438,19 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     status: AttendanceStatus,
     remark = ''
   ) => {
-    if (!user) throw new Error('Not authenticated');
+    if (!trainerId) throw new Error('No active trainer session');
     const attRef = doc(db, 'students', student.id, 'attendance', date);
     try {
       const existingSnap = await getDocs(
         query(
           collection(db, 'students', student.id, 'attendance'),
-          where('ownerId', '==', user.uid),
+          where('trainerId', '==', trainerId),
           where('date', '==', date)
         )
       );
       if (existingSnap.empty) {
         await setDoc(attRef, {
-          ownerId: user.uid,
+          trainerId,
           studentId: student.id,
           branch: student.branch,
           date,
@@ -408,6 +459,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
+        await syncTrainerStats(students, 1);
       } else {
         await updateDoc(attRef, {
           status,
@@ -427,11 +479,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   const fetchStudentAttendance = useCallback(
     async (studentId: string): Promise<AttendanceRecord[]> => {
-      if (!user) return [];
+      if (!trainerId) return [];
       const path = `students/${studentId}/attendance`;
       try {
         const snap = await getDocs(
-          query(collection(db, path), where('ownerId', '==', user.uid))
+          query(collection(db, path), where('trainerId', '==', trainerId))
         );
         const list = snap.docs.map((d) => ({
           ...(d.data() as Omit<AttendanceRecord, 'id'>),
@@ -443,7 +495,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         handleFirestoreError(error, OperationType.LIST, path);
       }
     },
-    [user]
+    [trainerId]
   );
 
   return (

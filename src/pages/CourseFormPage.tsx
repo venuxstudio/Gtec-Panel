@@ -2,7 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Edit3, Plus, Save, Trash2, X } from 'lucide-react';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { DarkSelect } from '../components/DarkSelect';
 import { useData } from '../context/DataContext';
+import { useNotify } from '../context/NotificationContext';
 import { durationToDays } from '../lib/duration';
 import { DurationUnit, SoftwareItem } from '../types';
 
@@ -14,6 +16,7 @@ export function CourseFormPage() {
   const { courseId } = useParams<{ courseId: string }>();
   const navigate = useNavigate();
   const { courses, addCourse, updateCourse, deleteCourse } = useData();
+  const { notify } = useNotify();
 
   const isEdit = Boolean(courseId);
   const editingCourse = useMemo(
@@ -72,6 +75,23 @@ export function CourseFormPage() {
     e.preventDefault();
     setErrorMsg('');
 
+    if (!shortName.trim() || !fullName.trim()) {
+      setErrorMsg('Please enter both Course Short Name and Full Course Details.');
+      return;
+    }
+
+    const partialRow = softwares.find(
+      (s) =>
+        (s.fullName.trim().length > 0 && s.shortName.trim().length === 0) ||
+        (s.fullName.trim().length === 0 && s.shortName.trim().length > 0)
+    );
+    if (partialRow) {
+      setErrorMsg(
+        'Each filled software row needs both a Full Software Name and a Short Name.'
+      );
+      return;
+    }
+
     const validSoftwares = softwares.filter(
       (s) => s.fullName.trim().length > 0 && s.shortName.trim().length > 0
     );
@@ -90,6 +110,11 @@ export function CourseFormPage() {
           durationUnit,
           softwares: validSoftwares,
         });
+        notify({
+          title: 'COURSE UPDATED',
+          message: `${shortName.trim().toUpperCase()} (${validSoftwares.length} softwares) saved.`,
+          tone: 'success',
+        });
       } else {
         await addCourse({
           shortName,
@@ -98,10 +123,21 @@ export function CourseFormPage() {
           durationUnit,
           softwares: validSoftwares,
         });
+        notify({
+          title: 'COURSE ADDED',
+          message: `${shortName.trim().toUpperCase()} added to your catalog.`,
+          tone: 'success',
+        });
       }
       navigate('/courses/manage');
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Unable to save course.');
+      const message = err instanceof Error ? err.message : 'Unable to save course.';
+      setErrorMsg(message);
+      notify({
+        title: 'SAVE FAILED',
+        message,
+        tone: 'error',
+      });
     } finally {
       setBusy(false);
     }
@@ -111,8 +147,20 @@ export function CourseFormPage() {
     if (!courseId) return;
     setDeleting(true);
     try {
+      const removedShort = shortName || 'Course';
       await deleteCourse(courseId);
+      notify({
+        title: 'COURSE REMOVED',
+        message: `${removedShort.toUpperCase()} removed from your catalog.`,
+        tone: 'warning',
+      });
       navigate('/courses/manage');
+    } catch (err) {
+      notify({
+        title: 'DELETE FAILED',
+        message: err instanceof Error ? err.message : 'Unable to remove course.',
+        tone: 'error',
+      });
     } finally {
       setDeleting(false);
     }
@@ -192,22 +240,23 @@ export function CourseFormPage() {
               onChange={(e) => setDurationValue(Number(e.target.value))}
               className="min-h-[44px] w-28 rounded-xl border border-white/12 bg-white/[0.04] px-3.5 font-mono text-sm text-white focus:border-white/35 focus:outline-none"
             />
-            <select
+            <DarkSelect
               value={durationUnit}
-              onChange={(e) => setDurationUnit(e.target.value as DurationUnit)}
-              className="min-h-[44px] rounded-xl border border-white/12 bg-[#12161D] px-3.5 text-sm text-white focus:border-white/35 focus:outline-none"
-            >
-              <option value="days">Days</option>
-              <option value="weeks">Weeks</option>
-              <option value="months">Months</option>
-            </select>
+              onChange={(val) => setDurationUnit(val as DurationUnit)}
+              ariaLabel="Duration Unit"
+              className="w-36"
+              options={[
+                { value: 'days', label: 'Days' },
+                { value: 'weeks', label: 'Weeks' },
+                { value: 'months', label: 'Months' },
+              ]}
+            />
             <span className="font-mono text-xs text-zinc-400">
               = {totalDaysPreview} calendar days
             </span>
           </div>
         </div>
 
-        {/* Softwares Section: 6 paired Full Name + Short Name rows */}
         <div className="space-y-3 border-t border-white/[0.08] pt-5">
           <div className="flex items-center justify-between">
             <div>

@@ -2,9 +2,11 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { BookPlus, Edit3, Search, Sparkles } from 'lucide-react';
 import { useData } from '../context/DataContext';
+import { useNotify } from '../context/NotificationContext';
 
 export function CoursesDirectoryPage() {
   const { courses, loading, importStandardCourses } = useData();
+  const { notify } = useNotify();
   const [queryText, setQueryText] = useState('');
   const [seeding, setSeeding] = useState(false);
 
@@ -40,7 +42,21 @@ export function CoursesDirectoryPage() {
             onClick={async () => {
               setSeeding(true);
               try {
-                await importStandardCourses();
+                const { addedCount } = await importStandardCourses();
+                notify({
+                  title: addedCount > 0 ? 'STANDARD COURSES IMPORTED' : 'CATALOG UP TO DATE',
+                  message:
+                    addedCount > 0
+                      ? `${addedCount} template courses synced to your catalog.`
+                      : 'All standard G-TEC courses are already in your catalog.',
+                  tone: addedCount > 0 ? 'success' : 'info',
+                });
+              } catch (err) {
+                notify({
+                  title: 'IMPORT FAILED',
+                  message: err instanceof Error ? err.message : 'Unable to import courses.',
+                  tone: 'error',
+                });
               } finally {
                 setSeeding(false);
               }

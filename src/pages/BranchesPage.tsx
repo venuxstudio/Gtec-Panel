@@ -1,16 +1,25 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ArrowRight, BookOpen, CalendarDays, Sparkles, Users } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
+import { useNotify } from '../context/NotificationContext';
 import { isBranchClassDay } from '../lib/duration';
 import { BRANCH_LIST } from '../types';
 
 export function BranchesPage() {
+  const { activeTrainer } = useAuth();
   const { students, courses, loading, importStandardCourses } = useData();
+  const { notify } = useNotify();
   const navigate = useNavigate();
   const [seeding, setSeeding] = useState(false);
 
   const today = new Date();
+  const trainerBranches = BRANCH_LIST.filter((b) =>
+    activeTrainer ? activeTrainer.branches.includes(b.id) : true
+  );
+  const displayBranches = trainerBranches.length > 0 ? trainerBranches : BRANCH_LIST;
+
   const ongoingCount = students.filter((s) => s.status === 'ongoing').length;
   const upcomingExamsCount = students.filter((s) => Boolean(s.examDate)).length;
 
@@ -24,7 +33,7 @@ export function BranchesPage() {
             Select Branch Workspace
           </h1>
           <p className="mt-1.5 text-sm text-zinc-400">
-            Open either center to review active batches, track course durations, and record attendance.
+            Open your assigned center to review active batches, track course durations, and record attendance.
           </p>
         </div>
 
@@ -60,7 +69,7 @@ export function BranchesPage() {
             <div>
               <h2 className="text-sm font-semibold text-white">No courses configured yet</h2>
               <p className="mt-0.5 text-xs text-zinc-400">
-                Add your institute courses first, or import standard DCA, DTP, and PGDCA templates with 6 software modules each.
+                Add your courses first, or import standard DCA, DTP, and PGDCA templates with 6 software modules each.
               </p>
             </div>
           </div>
@@ -71,7 +80,21 @@ export function BranchesPage() {
               onClick={async () => {
                 setSeeding(true);
                 try {
-                  await importStandardCourses();
+                  const { addedCount } = await importStandardCourses();
+                  notify({
+                    title: addedCount > 0 ? 'STANDARD COURSES IMPORTED' : 'CATALOG UP TO DATE',
+                    message:
+                      addedCount > 0
+                        ? `${addedCount} template courses added to your catalog.`
+                        : 'DCA, DTP, and PGDCA already exist in your catalog.',
+                    tone: addedCount > 0 ? 'success' : 'info',
+                  });
+                } catch (err) {
+                  notify({
+                    title: 'IMPORT FAILED',
+                    message: err instanceof Error ? err.message : 'Unable to import courses.',
+                    tone: 'error',
+                  });
                 } finally {
                   setSeeding(false);
                 }
@@ -91,13 +114,19 @@ export function BranchesPage() {
         </div>
       )}
 
-      {/* Two Main Branch Panels */}
-      <div className="grid gap-6 md:grid-cols-2">
-        {BRANCH_LIST.map((branch, idx) => {
+      {/* Trainer's Branch Panels */}
+      <div
+        className={`grid gap-6 ${
+          displayBranches.length === 1 ? 'max-w-2xl' : 'md:grid-cols-2'
+        }`}
+      >
+        {displayBranches.map((branch, idx) => {
           const branchStudents = students.filter((s) => s.branch === branch.id);
           const activeStudents = branchStudents.filter((s) => s.status === 'ongoing').length;
           const completedStudents = branchStudents.filter((s) => s.status === 'completed').length;
-          const isClassToday = isBranchClassDay(branch.id, today);
+          const scheduleText =
+            activeTrainer?.branchSchedules?.[branch.id] || branch.scheduleLabel;
+          const isClassToday = isBranchClassDay(branch.id, today, scheduleText);
 
           return (
             <button
@@ -106,7 +135,6 @@ export function BranchesPage() {
               onClick={() => navigate(`/branch/${branch.id}`)}
               className="glass-panel glass-panel-hover group flex flex-col justify-between rounded-[26px] p-7 sm:p-9 text-left min-h-[260px]"
             >
-              {/* Top subtle ray accent */}
               <div
                 aria-hidden="true"
                 className={`pointer-events-none absolute -top-24 ${
@@ -118,7 +146,7 @@ export function BranchesPage() {
                 <div>
                   <div className="flex items-center gap-2 text-xs text-zinc-400">
                     <CalendarDays className="h-3.5 w-3.5 text-emerald-400" />
-                    <span className="font-mono">{branch.scheduleLabel}</span>
+                    <span className="font-mono">{scheduleText}</span>
                     {isClassToday && (
                       <>
                         <span aria-hidden="true">·</span>
