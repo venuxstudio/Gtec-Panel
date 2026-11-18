@@ -59,7 +59,14 @@ interface AuthContextValue {
     currentPasskey: string,
     newPasskey: string
   ) => Promise<{ ok: boolean; error?: string }>;
-  deleteTrainerAccount: (trainerId: string) => Promise<void>;
+  verifyTrainerPasskey: (
+    trainerId: string,
+    passkey: string
+  ) => Promise<{ ok: boolean; error?: string }>;
+  deleteTrainerAccount: (
+    trainerId: string,
+    passkey: string
+  ) => Promise<{ ok: boolean; error?: string }>;
   logout: () => void;
 }
 
@@ -420,7 +427,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const deleteTrainerAccount = async (trainerId: string) => {
+  const verifyTrainerPasskey = async (
+    trainerId: string,
+    passkey: string
+  ): Promise<{ ok: boolean; error?: string }> => {
+    if (!activeTrainerId || activeTrainerId !== trainerId) {
+      return {
+        ok: false,
+        error: 'Only the currently logged-in trainer can delete this Trainer ID.',
+      };
+    }
+    if (!passkey.trim()) {
+      return { ok: false, error: 'Please enter your login passkey.' };
+    }
+    const path = `trainers/${trainerId}/credentials/auth`;
+    let snap;
+    try {
+      snap = await getDoc(doc(db, path));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, path);
+    }
+    if (!snap.exists()) {
+      return { ok: false, error: 'Trainer credentials not found.' };
+    }
+    const creds = snap.data() as TrainerCredentials;
+    const candidateHash = await hashSecret(trainerId, passkey);
+    if (candidateHash !== creds.passkeyHash) {
+      return { ok: false, error: 'Incorrect passkey. Please try again.' };
+    }
+    return { ok: true };
+  };
+
+  const deleteTrainerAccount = async (
+    trainerId: string,
+    passkey: string
+  ): Promise<{ ok: boolean; error?: string }> => {
+    const authCheck = await verifyTrainerPasskey(trainerId, passkey);
+    if (!authCheck.ok) {
+      return authCheck;
+    }
+
     try {
       const refsToDelete: DocumentReference[] = [];
 
@@ -462,6 +508,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (activeTrainerId === trainerId) {
         persistSession(null);
       }
+      return { ok: true };
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `trainers/${trainerId}`);
     }
@@ -485,6 +532,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         updateTrainerProfile,
         markDashboardConfigured,
         changeTrainerPasskey,
+        verifyTrainerPasskey,
         deleteTrainerAccount,
         logout,
       }}

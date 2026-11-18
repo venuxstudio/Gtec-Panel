@@ -116,7 +116,7 @@ export function StudentsDirectoryPage() {
       </div>
 
       {/* Filter Bar with Search + Select Branch */}
-      <div className="glass-panel flex flex-col gap-3 rounded-2xl p-4 sm:flex-row sm:items-center">
+      <div className="glass-panel relative z-20 flex flex-col gap-3 rounded-2xl p-4 sm:flex-row sm:items-center">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
           <input

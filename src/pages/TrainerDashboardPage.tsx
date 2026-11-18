@@ -1,14 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
+  AlertTriangle,
   ArrowRight,
   CalendarDays,
   KeyRound,
   Save,
+  ShieldAlert,
   Trash2,
+  X,
 } from 'lucide-react';
 import { BranchSchedulePicker } from '../components/BranchSchedulePicker';
-import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 import { useNotify } from '../context/NotificationContext';
@@ -21,6 +23,7 @@ export function TrainerDashboardPage() {
     updateTrainerProfile,
     markDashboardConfigured,
     changeTrainerPasskey,
+    verifyTrainerPasskey,
     deleteTrainerAccount,
   } = useAuth();
   const { students, courses } = useData();
@@ -42,7 +45,10 @@ export function TrainerDashboardPage() {
   const [passkeyNotice, setPasskeyNotice] = useState('');
   const [passkeyError, setPasskeyError] = useState('');
 
-  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [deleteStep, setDeleteStep] = useState<'closed' | 'passkey' | 'warning'>('closed');
+  const [deletePasskey, setDeletePasskey] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [verifyingDelete, setVerifyingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
@@ -171,14 +177,57 @@ export function TrainerDashboardPage() {
     }
   };
 
+  const openDeleteModal = () => {
+    setDeletePasskey('');
+    setDeleteError('');
+    setDeleteStep('passkey');
+  };
+
+  const closeDeleteModal = () => {
+    if (deleting || verifyingDelete) return;
+    setDeleteStep('closed');
+    setDeletePasskey('');
+    setDeleteError('');
+  };
+
+  const handleVerifyDeletePasskey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setDeleteError('');
+    if (!deletePasskey.trim()) {
+      setDeleteError('Please enter your login passkey.');
+      return;
+    }
+    setVerifyingDelete(true);
+    try {
+      const check = await verifyTrainerPasskey(activeTrainer.id, deletePasskey);
+      if (!check.ok) {
+        setDeleteError(check.error || 'Incorrect passkey.');
+        return;
+      }
+      setDeleteStep('warning');
+    } catch (err) {
+      setDeleteError(
+        err instanceof Error ? err.message : 'Unable to verify passkey.'
+      );
+    } finally {
+      setVerifyingDelete(false);
+    }
+  };
+
   const handleDeleteTrainer = async () => {
     setDeleting(true);
+    setDeleteError('');
     try {
       const removedName = activeTrainer.name;
-      await deleteTrainerAccount(activeTrainer.id);
+      const res = await deleteTrainerAccount(activeTrainer.id, deletePasskey);
+      if (!res.ok) {
+        setDeleteError(res.error || 'Unable to verify passkey.');
+        setDeleteStep('passkey');
+        return;
+      }
       notify({
         title: 'TRAINER REMOVED',
-        message: `${removedName} and linked records removed.`,
+        message: `${removedName}, all students, courses, and attendance logs removed.`,
         tone: 'warning',
       });
       navigate('/');
@@ -393,7 +442,7 @@ export function TrainerDashboardPage() {
               <div className="flex items-center justify-between pt-1">
                 <button
                   type="button"
-                  onClick={() => setConfirmDeleteOpen(true)}
+                  onClick={openDeleteModal}
                   className="inline-flex items-center gap-1 text-xs text-red-400 hover:text-red-300"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
@@ -411,15 +460,139 @@ export function TrainerDashboardPage() {
         </div>
       </div>
 
-      <ConfirmDialog
-        open={confirmDeleteOpen}
-        title="Remove Trainer Profile?"
-        description={`This deletes the trainer card for ${activeTrainer.name} from the home page.`}
-        confirmLabel="Remove Trainer"
-        busy={deleting}
-        onConfirm={handleDeleteTrainer}
-        onCancel={() => setConfirmDeleteOpen(false)}
-      />
+      {deleteStep !== 'closed' && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-trainer-title"
+        >
+          <div className="glass-panel w-full max-w-md rounded-2xl border border-red-500/25 p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-red-500/35 bg-red-500/15 text-red-400">
+                  {deleteStep === 'passkey' ? (
+                    <ShieldAlert className="h-5 w-5" />
+                  ) : (
+                    <AlertTriangle className="h-5 w-5" />
+                  )}
+                </div>
+                <div>
+                  <h3 id="delete-trainer-title" className="text-base font-semibold text-white">
+                    {deleteStep === 'passkey'
+                      ? 'Verify Trainer Passkey'
+                      : 'Permanent Deletion Warning'}
+                  </h3>
+                  <p className="mt-0.5 text-xs text-zinc-400">
+                    {deleteStep === 'passkey'
+                      ? `Only ${activeTrainer.name} can authorize deleting this Trainer ID.`
+                      : 'This action cannot be undone.'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={closeDeleteModal}
+                disabled={deleting || verifyingDelete}
+                aria-label="Close delete trainer dialog"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/10 text-zinc-400 transition-colors hover:bg-white/5 hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {deleteStep === 'passkey' ? (
+              <form onSubmit={handleVerifyDeletePasskey} className="mt-5 space-y-4">
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-zinc-300">
+                    Enter Login Passkey for {activeTrainer.name}
+                  </label>
+                  <input
+                    type="password"
+                    autoFocus
+                    required
+                    value={deletePasskey}
+                    onChange={(e) => {
+                      setDeletePasskey(e.target.value);
+                      if (deleteError) setDeleteError('');
+                    }}
+                    placeholder="Enter your passkey"
+                    className="min-h-[44px] w-full rounded-xl border border-white/15 bg-black/45 px-3.5 font-mono text-sm text-white placeholder-zinc-500 focus:border-red-400/50 focus:outline-none"
+                  />
+                </div>
+
+                {deleteError && (
+                  <p className="rounded-xl border border-red-500/35 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                    {deleteError}
+                  </p>
+                )}
+
+                <div className="flex items-center justify-end gap-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={closeDeleteModal}
+                    disabled={verifyingDelete}
+                    className="min-h-[42px] rounded-xl border border-white/12 bg-white/[0.03] px-4 py-2 text-sm font-medium text-zinc-300 transition-colors hover:bg-white/[0.08] hover:text-white"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={verifyingDelete}
+                    className="min-h-[42px] rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-500 disabled:opacity-50"
+                  >
+                    {verifyingDelete ? 'Verifying...' : 'Verify Passkey'}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="mt-5 space-y-4">
+                <div className="rounded-xl border border-red-500/35 bg-red-500/10 p-4 text-xs leading-relaxed text-red-200">
+                  <p className="font-semibold text-red-300">
+                    Warning: All data for {activeTrainer.name} will be permanently gone!
+                  </p>
+                  <ul className="mt-2 list-disc space-y-1 pl-4 text-red-200/90">
+                    <li>
+                      All <strong>{students.length} student profile(s)</strong>, software progress, and exam dates will be erased.
+                    </li>
+                    <li>
+                      All <strong>attendance logs</strong> and <strong>{courses.length} course(s)</strong> under this trainer will be permanently deleted.
+                    </li>
+                    <li>
+                      Your Trainer ID and passkey cannot be recovered after deletion.
+                    </li>
+                  </ul>
+                </div>
+
+                {deleteError && (
+                  <p className="rounded-xl border border-red-500/35 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                    {deleteError}
+                  </p>
+                )}
+
+                <div className="flex items-center justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={closeDeleteModal}
+                    disabled={deleting}
+                    className="min-h-[42px] rounded-xl border border-white/12 bg-white/[0.03] px-4 py-2 text-sm font-medium text-zinc-300 transition-colors hover:bg-white/[0.08] hover:text-white"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDeleteTrainer}
+                    disabled={deleting}
+                    className="min-h-[42px] rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-500 disabled:opacity-50"
+                  >
+                    {deleting ? 'Deleting Everything...' : 'Confirm & Delete All'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
