@@ -156,9 +156,7 @@ export function exportStudentPdfReport(params: {
       : metrics.isDurationOver
       ? 'Duration Over'
       : 'Ongoing';
-  const durationSummary = metrics.isExtended
-    ? `${metrics.baseTotalDays}d course (Extended to ${metrics.totalDays}d) · ${metrics.daysLeft}d left`
-    : `${metrics.baseTotalDays}d · ${metrics.daysLeft}d left · ${metrics.progressPct}% (${metrics.statusLabel})`;
+  const durationSummary = `${metrics.baseTotalDays}d · ${metrics.daysLeft}d left · ${metrics.progressPct}% (${metrics.statusLabel})`;
 
   autoTable(doc, {
     startY: cursorY + 3,

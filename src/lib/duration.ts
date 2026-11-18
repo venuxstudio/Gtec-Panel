@@ -100,47 +100,10 @@ export function resolveEffectiveSchedule(params: {
   const branchDays = parseScheduleDays(params.branchSchedule, BRANCHES[params.branch].days);
   const activeDays = normalizeClassDays(params.studentClassDays, branchDays);
 
-  if (activeDays.length === 0 || activeDays.length >= branchDays.length) {
-    return {
-      effectiveTotalDays: safeBase,
-      endDateStr: format(addDays(joinDate, safeBase), 'yyyy-MM-dd'),
-      isExtended: false,
-      activeDays,
-      branchDays,
-    };
-  }
-
-  const branchSet = new Set(branchDays.map((d) => WEEKDAY_TO_INDEX[d]));
-  const activeSet = new Set(activeDays.map((d) => WEEKDAY_TO_INDEX[d]));
-
-  // Count how many branch class sessions occur across the nominal course duration
-  let requiredSessions = 0;
-  for (let i = 0; i < safeBase; i++) {
-    if (branchSet.has(addDays(joinDate, i).getDay())) {
-      requiredSessions++;
-    }
-  }
-  requiredSessions = Math.max(1, requiredSessions);
-
-  // Walk calendar days forward on the student's selected attendance days to match requiredSessions
-  let completedSessions = 0;
-  let dayOffset = 0;
-  const maxWalkDays = 3650;
-  while (dayOffset < maxWalkDays) {
-    if (activeSet.has(addDays(joinDate, dayOffset).getDay())) {
-      completedSessions++;
-      if (completedSessions >= requiredSessions) {
-        break;
-      }
-    }
-    dayOffset++;
-  }
-
-  const effectiveTotalDays = Math.min(3650, Math.max(safeBase, dayOffset + 1));
   return {
-    effectiveTotalDays,
-    endDateStr: format(addDays(joinDate, effectiveTotalDays), 'yyyy-MM-dd'),
-    isExtended: effectiveTotalDays > safeBase,
+    effectiveTotalDays: safeBase,
+    endDateStr: format(addDays(joinDate, safeBase), 'yyyy-MM-dd'),
+    isExtended: false,
     activeDays,
     branchDays,
   };
@@ -150,7 +113,7 @@ export function calculateDurationMetrics(
   joiningDateStr: string,
   totalDurationDays: number,
   manualStatus?: StudentStatus,
-  scheduleOptions?: ScheduleDurationOptions
+  _scheduleOptions?: ScheduleDurationOptions
 ): DurationMetrics {
   const safeBase = Math.max(1, totalDurationDays || 1);
   let joinDate: Date;
@@ -163,22 +126,9 @@ export function calculateDurationMetrics(
     joinDate = new Date();
   }
 
-  let effectiveTotal = safeBase;
-  let endDateStr = format(addDays(joinDate, safeBase), 'yyyy-MM-dd');
-  let isExtended = false;
-
-  if (scheduleOptions) {
-    const resolved = resolveEffectiveSchedule({
-      joiningDateStr,
-      baseDurationDays: safeBase,
-      branch: scheduleOptions.branch,
-      branchSchedule: scheduleOptions.branchSchedule,
-      studentClassDays: scheduleOptions.studentClassDays,
-    });
-    effectiveTotal = resolved.effectiveTotalDays;
-    endDateStr = resolved.endDateStr;
-    isExtended = resolved.isExtended;
-  }
+  const effectiveTotal = safeBase;
+  const endDateStr = format(addDays(joinDate, safeBase), 'yyyy-MM-dd');
+  const isExtended = false;
 
   const today = new Date();
   const elapsedRaw = differenceInCalendarDays(today, joinDate);

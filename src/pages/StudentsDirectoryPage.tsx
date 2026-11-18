@@ -10,8 +10,9 @@ import {
   fetchInChunks,
   formatScheduleDays,
   getStudentScheduleDays,
+  parseScheduleDays,
 } from '../lib/duration';
-import { AttendanceRecord, BRANCH_LIST, BranchId } from '../types';
+import { AttendanceRecord, BRANCHES, BRANCH_LIST, BranchId } from '../types';
 
 export function StudentsDirectoryPage() {
   const { activeTrainer } = useAuth();
@@ -189,6 +190,10 @@ export function StudentsDirectoryPage() {
               const studentDaysLabel = formatScheduleDays(
                 getStudentScheduleDays(student.branch, branchSchedule, student.classDays)
               );
+              const branchDefaultLabel = formatScheduleDays(
+                parseScheduleDays(branchSchedule, BRANCHES[student.branch].days)
+              );
+              const hasCustomDays = studentDaysLabel !== branchDefaultLabel;
 
               return (
                 <div
@@ -210,7 +215,7 @@ export function StudentsDirectoryPage() {
                       )}
                       <span className="text-xs text-zinc-500">·</span>
                       <span className="font-mono text-xs text-zinc-400">{student.branch}</span>
-                      {metrics.isExtended && (
+                      {hasCustomDays && (
                         <>
                           <span className="text-xs text-zinc-500">·</span>
                           <span className="font-mono text-[11px] text-amber-300">

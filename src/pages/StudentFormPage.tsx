@@ -332,7 +332,7 @@ export function StudentFormPage() {
                   <span>Weekly Attendance Days *</span>
                 </label>
                 <p className="mt-0.5 text-[11px] text-zinc-400">
-                  Branch default: {branchScheduleLabel}. Selecting fewer days automatically extends the final completion date while keeping course duration unchanged.
+                  Branch default: {branchScheduleLabel}. Marks which days this student attends for Quick Roll Call and calendar highlights (course duration stays fixed).
                 </p>
               </div>
               <button
@@ -413,12 +413,10 @@ export function StudentFormPage() {
                   Course Duration:{' '}
                   <strong className="font-mono">{computedTotalDays} days</strong>
                 </span>
-                {schedulePreview.isExtended && (
-                  <span className="text-amber-300">
-                    Extended Timeline ({classDays.join(', ')}):{' '}
-                    <strong className="font-mono">{schedulePreview.effectiveTotalDays} days</strong>
-                  </span>
-                )}
+                <span className="text-zinc-300">
+                  Attendance Days:{' '}
+                  <strong className="font-mono text-white">{classDays.join(', ')}</strong>
+                </span>
               </div>
               <span className="text-zinc-300">
                 Estimated Completion:{' '}

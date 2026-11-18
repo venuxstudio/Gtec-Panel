@@ -475,11 +475,6 @@ export function StudentDetailPage() {
                 <p className="text-xs text-zinc-400">Enrolled Course(s)</p>
                 <p className="font-mono text-[11px] text-zinc-400">
                   Course Duration: {metrics.baseTotalDays}d
-                  {metrics.isExtended && (
-                    <span className="ml-1.5 text-amber-300">
-                      · Extended Timeline: {metrics.totalDays}d
-                    </span>
-                  )}
                 </p>
               </div>
               <p className="mt-1 text-base font-semibold text-white">
