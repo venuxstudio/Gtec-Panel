@@ -68,8 +68,10 @@ export function StudentFormPage() {
       ? courses.find((c) => c.id === course2Id)
       : undefined;
 
-  const computedTotalDays =
-    (selectedCourse1?.durationDays || 0) + (selectedCourse2?.durationDays || 0);
+  const computedTotalDays = Math.max(
+    selectedCourse1?.durationDays || 0,
+    selectedCourse2?.durationDays || 0
+  );
 
   const computedEndDate = useMemo(() => {
     if (!joiningDate || computedTotalDays <= 0) return '';

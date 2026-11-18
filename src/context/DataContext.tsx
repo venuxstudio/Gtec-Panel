@@ -287,7 +287,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
     const c1Days = Math.max(1, c1.durationDays);
     const c2Days = c2 ? Math.max(1, c2.durationDays) : 0;
-    const totalDurationDays = Math.min(3650, c1Days + c2Days);
+    const totalDurationDays = Math.min(3650, Math.max(c1Days, c2Days));
 
     return {
       course1Id: c1.id,
