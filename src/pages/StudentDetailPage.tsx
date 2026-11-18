@@ -31,7 +31,10 @@ import { useNotify } from '../context/NotificationContext';
 import {
   calculateDurationMetrics,
   formatReadableDate,
+  formatScheduleDays,
+  getStudentScheduleDays,
   isBranchClassDay,
+  parseScheduleDays,
 } from '../lib/duration';
 import { AttendanceRecord, AttendanceStatus, BRANCHES } from '../types';
 
@@ -151,10 +154,26 @@ export function StudentDetailPage() {
   const branchInfo = BRANCHES[student.branch];
   const branchSchedule =
     activeTrainer?.branchSchedules?.[student.branch] || branchInfo.scheduleLabel;
+  const studentDays = getStudentScheduleDays(
+    student.branch,
+    branchSchedule,
+    student.classDays
+  );
+  const studentScheduleLabel = formatScheduleDays(studentDays);
+  const branchDefaultLabel = formatScheduleDays(
+    parseScheduleDays(branchSchedule, branchInfo.days)
+  );
+  const hasCustomSchedule = studentScheduleLabel !== branchDefaultLabel;
+
   const metrics = calculateDurationMetrics(
     student.joiningDate,
     student.totalDurationDays,
-    student.status
+    student.status,
+    {
+      branch: student.branch,
+      branchSchedule,
+      studentClassDays: student.classDays,
+    }
   );
 
   const course1 = courses.find((c) => c.id === student.course1Id);
@@ -296,8 +315,9 @@ export function StudentDetailPage() {
             <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
               <span className="font-medium text-emerald-400">{branchInfo.name}</span>
               <span aria-hidden="true">·</span>
-              <span className="font-mono">
-                {activeTrainer?.branchSchedules?.[student.branch] || branchInfo.scheduleLabel}
+              <span className="font-mono text-zinc-200">
+                {studentScheduleLabel}
+                {hasCustomSchedule ? ' (Custom days)' : ''}
               </span>
               {student.regNo && (
                 <>
@@ -306,8 +326,21 @@ export function StudentDetailPage() {
                 </>
               )}
               <span aria-hidden="true">·</span>
-              <span className="capitalize">
-                Status: {student.status === 'completed' ? 'Completed' : 'Ongoing'}
+              <span
+                className={
+                  student.status === 'completed'
+                    ? 'text-red-400 font-medium'
+                    : metrics.isDurationOver
+                    ? 'text-orange-400 font-medium'
+                    : 'text-emerald-400 font-medium'
+                }
+              >
+                Status:{' '}
+                {student.status === 'completed'
+                  ? 'Completed'
+                  : metrics.isDurationOver
+                  ? 'Duration Over'
+                  : 'Ongoing'}
               </span>
             </div>
 
@@ -357,6 +390,7 @@ export function StudentDetailPage() {
                     trainerName: activeTrainer?.name || 'Trainer',
                     trainerDesignation: activeTrainer?.designation || '',
                     branchSchedule,
+                    studentClassDays: student.classDays,
                   });
                   notify({
                     title: 'PDF REPORT DOWNLOADED',
@@ -437,7 +471,17 @@ export function StudentDetailPage() {
         <div className="mt-6 grid gap-5 lg:grid-cols-12">
           <div className="space-y-2 lg:col-span-7">
             <div className="rounded-xl border border-white/[0.07] bg-black/35 p-4">
-              <p className="text-xs text-zinc-400">Enrolled Course(s)</p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-zinc-400">Enrolled Course(s)</p>
+                <p className="font-mono text-[11px] text-zinc-400">
+                  Course Duration: {metrics.baseTotalDays}d
+                  {metrics.isExtended && (
+                    <span className="ml-1.5 text-amber-300">
+                      · Extended Timeline: {metrics.totalDays}d
+                    </span>
+                  )}
+                </p>
+              </div>
               <p className="mt-1 text-base font-semibold text-white">
                 {student.course1Short} — {student.course1Full}
                 <span className="ml-2 font-mono text-xs font-normal text-zinc-400">
@@ -584,7 +628,7 @@ export function StudentDetailPage() {
                 <span>Attendance Record</span>
               </h2>
               <p className="mt-0.5 text-xs text-zinc-400">
-                Scheduled days ({branchSchedule}) are highlighted. Select any date to record attendance.
+                Scheduled days ({studentScheduleLabel}) are highlighted. Select any date to record attendance.
               </p>
             </div>
 
@@ -675,10 +719,10 @@ export function StudentDetailPage() {
                 const rec = attendanceMap.get(dateStr);
                 const isSelected = selectedDateStr === dateStr;
                 const isToday = isSameDay(day, new Date());
-                const classDay = isBranchClassDay(student.branch, day, branchSchedule);
+                const classDay = isBranchClassDay(student.branch, day, studentScheduleLabel);
 
                 let stateClasses = classDay
-                  ? 'border-white/15 bg-white/[0.05] text-white'
+                  ? 'border-white/15 bg-white/[0.06] text-white'
                   : 'border-white/[0.05] bg-black/25 text-zinc-500';
 
                 if (rec?.status === 'present') {

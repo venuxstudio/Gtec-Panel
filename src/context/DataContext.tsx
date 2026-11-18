@@ -13,10 +13,16 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { OperationType, db, handleFirestoreError } from '../lib/firebase';
-import { STANDARD_GTEC_COURSES, durationToDays, makeDocumentId } from '../lib/duration';
+import {
+  STANDARD_GTEC_COURSES,
+  durationToDays,
+  makeDocumentId,
+  normalizeClassDays,
+} from '../lib/duration';
 import {
   AttendanceRecord,
   AttendanceStatus,
+  BRANCHES,
   BranchId,
   Course,
   DurationUnit,
@@ -38,6 +44,7 @@ export interface StudentInput {
   regNo: string;
   name: string;
   branch: BranchId;
+  classDays?: string[];
   course1Id: string;
   course2Id: string;
   joiningDate: string;
@@ -307,11 +314,16 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     const resolved = resolveCourseFields(input.course1Id, input.course2Id);
     const studentId = makeDocumentId('stu');
     const statusValue: StudentStatus = input.status || 'ongoing';
+    const cleanClassDays = normalizeClassDays(
+      input.classDays,
+      BRANCHES[input.branch].days
+    );
     const payload = {
       trainerId,
       regNo: (input.regNo || '').trim().slice(0, 40),
       name: input.name.trim().slice(0, 120),
       branch: input.branch,
+      classDays: cleanClassDays,
       ...resolved,
       joiningDate: input.joiningDate,
       examDate: input.examDate || '',
@@ -337,10 +349,15 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     const resolved = resolveCourseFields(input.course1Id, input.course2Id);
     const existing = students.find((s) => s.id === studentId);
     const nextStatus = input.status || existing?.status || 'ongoing';
+    const cleanClassDays = normalizeClassDays(
+      input.classDays,
+      existing?.classDays?.length ? existing.classDays : BRANCHES[input.branch].days
+    );
     const payload = {
       regNo: (input.regNo || '').trim().slice(0, 40),
       name: input.name.trim().slice(0, 120),
       branch: input.branch,
+      classDays: cleanClassDays,
       ...resolved,
       joiningDate: input.joiningDate,
       examDate: input.examDate || '',

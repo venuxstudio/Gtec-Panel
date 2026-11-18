@@ -1,8 +1,13 @@
 import { format, parseISO } from 'date-fns';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { calculateDurationMetrics, formatReadableDate } from './duration';
-import { AttendanceRecord, BRANCHES, Course, Student } from '../types';
+import {
+  calculateDurationMetrics,
+  formatReadableDate,
+  formatScheduleDays,
+  getStudentScheduleDays,
+} from './duration';
+import { AttendanceRecord, BRANCHES, BranchId, Course, Student } from '../types';
 
 function addFooterPageNumbers(
   doc: jsPDF,
@@ -70,6 +75,7 @@ export function exportStudentPdfReport(params: {
   trainerName: string;
   trainerDesignation: string;
   branchSchedule?: string;
+  studentClassDays?: string[];
 }) {
   const {
     student,
@@ -78,15 +84,27 @@ export function exportStudentPdfReport(params: {
     trainerName,
     trainerDesignation,
     branchSchedule,
+    studentClassDays,
   } = params;
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageWidth = doc.internal.pageSize.getWidth();
   const branchInfo = BRANCHES[student.branch];
   const resolvedSchedule = branchSchedule?.trim() || branchInfo.scheduleLabel;
+  const resolvedStudentDays = getStudentScheduleDays(
+    student.branch,
+    resolvedSchedule,
+    studentClassDays ?? student.classDays
+  );
+  const studentScheduleLabel = formatScheduleDays(resolvedStudentDays);
   const metrics = calculateDurationMetrics(
     student.joiningDate,
     student.totalDurationDays,
-    student.status
+    student.status,
+    {
+      branch: student.branch,
+      branchSchedule: resolvedSchedule,
+      studentClassDays: studentClassDays ?? student.classDays,
+    }
   );
   const swRows = getStudentSoftwareRows(student, courses);
   const completedSwCount = swRows.filter((s) => s.completed).length;
@@ -115,7 +133,7 @@ export function exportStudentPdfReport(params: {
     { align: 'right' }
   );
   doc.text(
-    `${branchInfo.name} (${resolvedSchedule})`,
+    `${branchInfo.name} (${studentScheduleLabel})`,
     pageWidth - 14,
     19,
     { align: 'right' }
@@ -132,6 +150,16 @@ export function exportStudentPdfReport(params: {
     ? `${student.course1Short} (${student.course1Full}) + ${student.course2Short} (${student.course2Full})`
     : `${student.course1Short} — ${student.course1Full}`;
 
+  const statusText =
+    student.status === 'completed'
+      ? 'Completed'
+      : metrics.isDurationOver
+      ? 'Duration Over'
+      : 'Ongoing';
+  const durationSummary = metrics.isExtended
+    ? `${metrics.baseTotalDays}d course (Extended to ${metrics.totalDays}d) · ${metrics.daysLeft}d left`
+    : `${metrics.baseTotalDays}d · ${metrics.daysLeft}d left · ${metrics.progressPct}% (${metrics.statusLabel})`;
+
   autoTable(doc, {
     startY: cursorY + 3,
     theme: 'grid',
@@ -144,10 +172,10 @@ export function exportStudentPdfReport(params: {
     },
     body: [
       ['Student Name', student.name, 'Reg. No.', student.regNo || '—'],
-      ['Branch', `${branchInfo.name} (${resolvedSchedule})`, 'Contact', student.contact],
+      ['Branch & Days', `${branchInfo.name} (${studentScheduleLabel})`, 'Contact', student.contact],
       ['Date of Joining', formatReadableDate(student.joiningDate), 'Est. End Date', formatReadableDate(metrics.endDateStr)],
-      ['Exam Date', student.examDate ? formatReadableDate(student.examDate) : 'Not scheduled', 'Status', student.status === 'completed' ? 'Completed' : 'Ongoing'],
-      ['Duration Progress', `${metrics.daysLeft}d left · ${metrics.progressPct}% (${metrics.statusLabel})`, 'Trainer', trainerName],
+      ['Exam Date', student.examDate ? formatReadableDate(student.examDate) : 'Not scheduled', 'Status', statusText],
+      ['Duration Progress', durationSummary, 'Trainer', trainerName],
       [
         'Enrolled Course(s)',
         { content: courseDisplay, colSpan: 3 },
@@ -294,6 +322,7 @@ export function exportBatchPdfReport(params: {
   attendanceByStudentId: Record<string, AttendanceRecord[]>;
   trainerName: string;
   trainerDesignation: string;
+  branchSchedules?: Partial<Record<BranchId, string>>;
 }) {
   const {
     title,
@@ -304,6 +333,7 @@ export function exportBatchPdfReport(params: {
     attendanceByStudentId,
     trainerName,
     trainerDesignation,
+    branchSchedules,
   } = params;
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -370,7 +400,7 @@ export function exportBatchPdfReport(params: {
         '#',
         'Reg. No.',
         'Student Name',
-        'Branch',
+        'Branch & Days',
         'Course(s)',
         'Contact',
         'Joined',
@@ -383,10 +413,19 @@ export function exportBatchPdfReport(params: {
     body:
       students.length > 0
         ? students.map((student, index) => {
+            const branchSchedule = branchSchedules?.[student.branch];
             const metrics = calculateDurationMetrics(
               student.joiningDate,
               student.totalDurationDays,
-              student.status
+              student.status,
+              {
+                branch: student.branch,
+                branchSchedule,
+                studentClassDays: student.classDays,
+              }
+            );
+            const studentDaysLabel = formatScheduleDays(
+              getStudentScheduleDays(student.branch, branchSchedule, student.classDays)
             );
             const swRows = getStudentSoftwareRows(student, courses);
             const swDone = swRows.filter((s) => s.completed).length;
@@ -397,14 +436,14 @@ export function exportBatchPdfReport(params: {
               String(index + 1),
               student.regNo || '—',
               student.name,
-              student.branch,
+              `${student.branch} (${studentDaysLabel})`,
               student.course2Short
                 ? `${student.course1Short} + ${student.course2Short}`
                 : student.course1Short,
               student.contact,
               student.joiningDate,
               student.examDate || '—',
-              `${metrics.daysLeft}d left (${metrics.progressPct}%)`,
+              `${metrics.daysLeft}d left (${metrics.progressPct}%) · ${metrics.statusLabel}`,
               swRows.length > 0 ? `${swDone}/${swRows.length} done` : '—',
               att.total > 0 ? `${att.rate}% (${att.present + att.late}/${att.total})` : 'No logs',
             ];

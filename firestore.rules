@@ -103,7 +103,7 @@ service cloud.firestore {
           'contact', 'completedSoftwares', 'status', 'notes', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'trainerId', 'regNo', 'name', 'branch', 'course1Id', 'course1Short', 'course1Full',
+          'trainerId', 'regNo', 'name', 'branch', 'classDays', 'course1Id', 'course1Short', 'course1Full',
           'course1DurationDays', 'course2Id', 'course2Short', 'course2Full',
           'course2DurationDays', 'totalDurationDays', 'joiningDate', 'examDate',
           'contact', 'completedSoftwares', 'status', 'notes', 'createdAt', 'updatedAt'
@@ -112,6 +112,12 @@ service cloud.firestore {
         && data.regNo is string && data.regNo.size() <= 40
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
         && data.branch in ['MAVELIKARA', 'KAYAMKULAM']
+        && (!('classDays' in data) || (
+          data.classDays is list
+          && data.classDays.size() >= 1
+          && data.classDays.size() <= 6
+          && data.classDays.hasOnly(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'])
+        ))
         && data.course1Id is string && isValidId(data.course1Id)
         && data.course1Short is string && data.course1Short.size() >= 1 && data.course1Short.size() <= 30
         && data.course1Full is string && data.course1Full.size() >= 1 && data.course1Full.size() <= 160
@@ -246,7 +252,7 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && (
           incoming().diff(existing()).affectedKeys().hasOnly([
-            'regNo', 'name', 'branch', 'course1Id', 'course1Short', 'course1Full',
+            'regNo', 'name', 'branch', 'classDays', 'course1Id', 'course1Short', 'course1Full',
             'course1DurationDays', 'course2Id', 'course2Short', 'course2Full',
             'course2DurationDays', 'totalDurationDays', 'joiningDate',
             'examDate', 'contact', 'completedSoftwares', 'status', 'notes', 'updatedAt'

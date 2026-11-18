@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { format } from 'date-fns';
+import { format, parseISO } from 'date-fns';
 import {
   ArrowLeft,
   CalendarCheck2,
@@ -18,7 +18,10 @@ import { useNotify } from '../context/NotificationContext';
 import {
   calculateDurationMetrics,
   fetchInChunks,
+  formatScheduleDays,
+  getStudentScheduleDays,
   isBranchClassDay,
+  parseScheduleDays,
 } from '../lib/duration';
 import { AttendanceRecord, AttendanceStatus, BRANCHES, BranchId, Student } from '../types';
 
@@ -34,6 +37,10 @@ export function BranchDetailPage() {
   const branch = BRANCHES[normalizedId];
   const scheduleLabel =
     activeTrainer?.branchSchedules?.[normalizedId] || branch.scheduleLabel;
+  const branchDefaultScheduleLabel = useMemo(
+    () => formatScheduleDays(parseScheduleDays(scheduleLabel, branch.days)),
+    [scheduleLabel, branch.days]
+  );
 
   const [queryText, setQueryText] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'ongoing' | 'completed'>('all');
@@ -41,6 +48,7 @@ export function BranchDetailPage() {
 
   const [rollCallOpen, setRollCallOpen] = useState(false);
   const [rollDate, setRollDate] = useState(() => format(new Date(), 'yyyy-MM-dd'));
+  const [rollFilter, setRollFilter] = useState<'scheduled' | 'all'>('scheduled');
   const [markedMap, setMarkedMap] = useState<Record<string, AttendanceStatus>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
   const [exportingPdf, setExportingPdf] = useState(false);
@@ -77,6 +85,44 @@ export function BranchDetailPage() {
       );
     });
   }, [branchStudents, statusFilter, courseFilter, queryText]);
+
+  const rollDateObj = useMemo(() => {
+    try {
+      const parsed = parseISO(rollDate);
+      return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+    } catch {
+      return new Date();
+    }
+  }, [rollDate]);
+
+  const rollWeekdayLabel = format(rollDateObj, 'EEE');
+
+  const rollCallStudents = useMemo(() => {
+    const ongoing = branchStudents.filter((s) => s.status === 'ongoing');
+    const enriched = ongoing.map((s) => {
+      const studentDays = getStudentScheduleDays(normalizedId, scheduleLabel, s.classDays);
+      const studentScheduleStr = formatScheduleDays(studentDays);
+      const isScheduledOnRollDate = isBranchClassDay(normalizedId, rollDateObj, studentScheduleStr);
+      return {
+        student: s,
+        studentScheduleStr,
+        isScheduledOnRollDate,
+      };
+    });
+    const sorted = [...enriched].sort(
+      (a, b) => Number(b.isScheduledOnRollDate) - Number(a.isScheduledOnRollDate)
+    );
+    const scheduledCount = sorted.filter((item) => item.isScheduledOnRollDate).length;
+    const list =
+      rollFilter === 'scheduled'
+        ? sorted.filter((item) => item.isScheduledOnRollDate)
+        : sorted;
+    return {
+      list,
+      totalOngoing: sorted.length,
+      scheduledCount,
+    };
+  }, [branchStudents, normalizedId, scheduleLabel, rollDateObj, rollFilter]);
 
   const getStudentSoftwareChips = (student: Student) => {
     const chips: Array<{ key: string; shortName: string; completed: boolean }> = [];
@@ -154,6 +200,7 @@ export function BranchDetailPage() {
         attendanceByStudentId,
         trainerName: activeTrainer?.name || 'Trainer',
         trainerDesignation: activeTrainer?.designation || '',
+        branchSchedules: activeTrainer?.branchSchedules,
       });
       notify({
         title: 'PDF REPORT DOWNLOADED',
@@ -234,10 +281,34 @@ export function BranchDetailPage() {
                 Quick Roll Call · {branch.name}
               </h2>
               <p className="text-xs text-zinc-400">
-                Tap Present, Absent, or Late for any ongoing student to record attendance immediately.
+                {rollCallStudents.scheduledCount} of {rollCallStudents.totalOngoing} ongoing student(s) scheduled on {rollWeekdayLabel}.
               </p>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-black/40 p-1">
+                <button
+                  type="button"
+                  onClick={() => setRollFilter('scheduled')}
+                  className={`min-h-[30px] rounded-lg px-2.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                    rollFilter === 'scheduled'
+                      ? 'bg-emerald-500 text-zinc-950 font-semibold'
+                      : 'text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  Scheduled ({rollWeekdayLabel})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRollFilter('all')}
+                  className={`min-h-[30px] rounded-lg px-2.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                    rollFilter === 'all'
+                      ? 'bg-white text-zinc-950 font-semibold'
+                      : 'text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  All Ongoing
+                </button>
+              </div>
               <input
                 type="date"
                 value={rollDate}
@@ -259,60 +330,80 @@ export function BranchDetailPage() {
           </div>
 
           <div className="mt-4 max-h-72 space-y-2 overflow-y-auto pr-1">
-            {branchStudents.filter((s) => s.status === 'ongoing').length === 0 ? (
+            {rollCallStudents.totalOngoing === 0 ? (
               <p className="py-4 text-center text-xs text-zinc-500">
                 No ongoing students in {branch.name}.
               </p>
+            ) : rollCallStudents.list.length === 0 ? (
+              <div className="py-5 text-center space-y-2">
+                <p className="text-xs text-zinc-400">
+                  No students scheduled on {rollWeekdayLabel} ({rollDate}).
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setRollFilter('all')}
+                  className="inline-flex min-h-[34px] items-center rounded-lg border border-white/15 bg-white/[0.05] px-3 text-xs font-medium text-white hover:bg-white/[0.1]"
+                >
+                  Show All Ongoing ({rollCallStudents.totalOngoing})
+                </button>
+              </div>
             ) : (
-              branchStudents
-                .filter((s) => s.status === 'ongoing')
-                .map((s) => {
-                  const chosen = markedMap[s.id];
-                  const isSaving = savingId === s.id;
-                  return (
-                    <div
-                      key={s.id}
-                      className="flex flex-col gap-2 rounded-xl border border-white/[0.07] bg-black/30 px-3.5 py-2.5 sm:flex-row sm:items-center sm:justify-between"
-                    >
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-white">
-                          {s.name}
-                          {s.regNo && (
-                            <span className="ml-2 font-mono text-xs text-zinc-400">
-                              #{s.regNo}
-                            </span>
-                          )}
-                        </p>
-                        <p className="text-xs text-zinc-400">
-                          {s.course1Short}
-                          {s.course2Short ? ` + ${s.course2Short}` : ''}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {(['present', 'absent', 'late'] as AttendanceStatus[]).map((st) => (
-                          <button
-                            key={st}
-                            type="button"
-                            disabled={isSaving}
-                            onClick={() => handleQuickMark(s, st)}
-                            className={`inline-flex min-h-[34px] items-center gap-1 rounded-lg border px-2.5 text-xs font-medium capitalize transition-colors ${
-                              chosen === st
-                                ? st === 'present'
-                                  ? 'border-emerald-500 bg-emerald-500 text-zinc-950'
-                                  : st === 'absent'
-                                  ? 'border-red-500 bg-red-500 text-white'
-                                  : 'border-amber-400 bg-amber-400 text-zinc-950'
-                                : 'border-white/10 bg-white/[0.04] text-zinc-300 hover:bg-white/[0.09]'
-                            }`}
-                          >
-                            {chosen === st && <Check className="h-3 w-3" />}
-                            <span>{st}</span>
-                          </button>
-                        ))}
-                      </div>
+              rollCallStudents.list.map(({ student: s, studentScheduleStr, isScheduledOnRollDate }) => {
+                const chosen = markedMap[s.id];
+                const isSaving = savingId === s.id;
+                return (
+                  <div
+                    key={s.id}
+                    className="flex flex-col gap-2 rounded-xl border border-white/[0.07] bg-black/30 px-3.5 py-2.5 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-white">
+                        {s.name}
+                        {s.regNo && (
+                          <span className="ml-2 font-mono text-xs text-zinc-400">
+                            #{s.regNo}
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-xs text-zinc-400">
+                        {s.course1Short}
+                        {s.course2Short ? ` + ${s.course2Short}` : ''}
+                        <span className="mx-1.5 text-zinc-600">·</span>
+                        <span className="font-mono text-[11px] text-zinc-300">
+                          {studentScheduleStr}
+                        </span>
+                        {!isScheduledOnRollDate && (
+                          <span className="ml-1.5 text-[11px] text-amber-300">
+                            (Off-day on {rollWeekdayLabel})
+                          </span>
+                        )}
+                      </p>
                     </div>
-                  );
-                })
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {(['present', 'absent', 'late'] as AttendanceStatus[]).map((st) => (
+                        <button
+                          key={st}
+                          type="button"
+                          disabled={isSaving}
+                          onClick={() => handleQuickMark(s, st)}
+                          className={`inline-flex min-h-[34px] items-center gap-1 rounded-lg border px-2.5 text-xs font-medium capitalize transition-colors ${
+                            chosen === st
+                              ? st === 'present'
+                                ? 'border-emerald-500 bg-emerald-500 text-zinc-950'
+                                : st === 'absent'
+                                ? 'border-red-500 bg-red-500 text-white'
+                                : 'border-amber-400 bg-amber-400 text-zinc-950'
+                              : 'border-white/10 bg-white/[0.04] text-zinc-300 hover:bg-white/[0.09]'
+                          }`}
+                        >
+                          {chosen === st && <Check className="h-3 w-3" />}
+                          <span>{st}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })
             )}
           </div>
         </section>
@@ -401,8 +492,17 @@ export function BranchDetailPage() {
             const metrics = calculateDurationMetrics(
               student.joiningDate,
               student.totalDurationDays,
-              student.status
+              student.status,
+              {
+                branch: student.branch,
+                branchSchedule: scheduleLabel,
+                studentClassDays: student.classDays,
+              }
             );
+            const studentDaysLabel = formatScheduleDays(
+              getStudentScheduleDays(student.branch, scheduleLabel, student.classDays)
+            );
+            const hasCustomDays = studentDaysLabel !== branchDefaultScheduleLabel;
             const swChips = getStudentSoftwareChips(student);
 
             return (
@@ -429,6 +529,9 @@ export function BranchDetailPage() {
                         {student.course1Short}
                         {student.course2Short ? ` + ${student.course2Short}` : ''}
                         <span className="text-zinc-500"> · Joined {student.joiningDate}</span>
+                        {hasCustomDays && (
+                          <span className="text-amber-300"> · {studentDaysLabel}</span>
+                        )}
                       </p>
                     </div>
                   </div>

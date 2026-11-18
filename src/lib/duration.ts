@@ -7,11 +7,20 @@ export interface DurationMetrics {
   elapsedDays: number;
   daysLeft: number;
   totalDays: number;
+  baseTotalDays: number;
+  isExtended: boolean;
   progressPct: number;
   endDateStr: string;
   band: ProgressBand;
   statusLabel: string;
   isCompletedByDate: boolean;
+  isDurationOver: boolean;
+}
+
+export interface ScheduleDurationOptions {
+  branch: BranchId;
+  branchSchedule?: string;
+  studentClassDays?: string[];
 }
 
 export function durationToDays(value: number, unit: DurationUnit): number {
@@ -19,64 +28,6 @@ export function durationToDays(value: number, unit: DurationUnit): number {
   if (unit === 'days') return Math.min(1825, clean);
   if (unit === 'weeks') return Math.min(1825, clean * 7);
   return Math.min(1825, clean * 30);
-}
-
-export function calculateDurationMetrics(
-  joiningDateStr: string,
-  totalDurationDays: number,
-  manualStatus?: StudentStatus
-): DurationMetrics {
-  const safeTotal = Math.max(1, totalDurationDays || 1);
-  let joinDate: Date;
-  try {
-    joinDate = parseISO(joiningDateStr);
-    if (Number.isNaN(joinDate.getTime())) {
-      joinDate = new Date();
-    }
-  } catch {
-    joinDate = new Date();
-  }
-
-  const today = new Date();
-  const elapsedRaw = differenceInCalendarDays(today, joinDate);
-  const elapsedDays = Math.max(0, Math.min(safeTotal, elapsedRaw));
-  const daysLeft =
-    manualStatus === 'completed' ? 0 : Math.max(0, safeTotal - Math.max(0, elapsedRaw));
-  const progressPct =
-    manualStatus === 'completed'
-      ? 100
-      : Math.min(100, Math.max(0, Math.round((elapsedDays / safeTotal) * 100)));
-
-  const endDateStr = format(addDays(joinDate, safeTotal), 'yyyy-MM-dd');
-  const isCompletedByDate = manualStatus === 'completed' || daysLeft === 0;
-
-  let band: ProgressBand = 'green';
-  let statusLabel = 'On Track';
-
-  if (progressPct <= 50) {
-    band = 'green';
-    statusLabel = 'On Track';
-  } else if (progressPct <= 70) {
-    band = 'yellow';
-    statusLabel = 'Midway';
-  } else if (progressPct <= 90) {
-    band = 'orange';
-    statusLabel = 'Ending Soon';
-  } else {
-    band = 'red';
-    statusLabel = isCompletedByDate ? 'Completed' : 'Final Days';
-  }
-
-  return {
-    elapsedDays,
-    daysLeft,
-    totalDays: safeTotal,
-    progressPct,
-    endDateStr,
-    band,
-    statusLabel,
-    isCompletedByDate,
-  };
 }
 
 const WEEKDAY_TO_INDEX: Record<string, number> = {
@@ -105,6 +56,176 @@ export function parseScheduleDays(schedule?: string, fallbackDays: string[] = []
 export function formatScheduleDays(days: string[]): string {
   const ordered = VALID_WEEKDAYS.filter((d) => days.includes(d));
   return ordered.join(', ');
+}
+
+export function normalizeClassDays(days?: string[], fallback: string[] = []): string[] {
+  if (!days || days.length === 0) return [...fallback];
+  const ordered = VALID_WEEKDAYS.filter((d) => days.includes(d));
+  return ordered.length > 0 ? [...ordered] : [...fallback];
+}
+
+export function getStudentScheduleDays(
+  branch: BranchId,
+  branchSchedule?: string,
+  studentClassDays?: string[]
+): string[] {
+  const branchDays = parseScheduleDays(branchSchedule, BRANCHES[branch].days);
+  return normalizeClassDays(studentClassDays, branchDays);
+}
+
+export function resolveEffectiveSchedule(params: {
+  joiningDateStr: string;
+  baseDurationDays: number;
+  branch: BranchId;
+  branchSchedule?: string;
+  studentClassDays?: string[];
+}): {
+  effectiveTotalDays: number;
+  endDateStr: string;
+  isExtended: boolean;
+  activeDays: string[];
+  branchDays: string[];
+} {
+  const safeBase = Math.max(1, params.baseDurationDays || 1);
+  let joinDate: Date;
+  try {
+    joinDate = parseISO(params.joiningDateStr);
+    if (Number.isNaN(joinDate.getTime())) {
+      joinDate = new Date();
+    }
+  } catch {
+    joinDate = new Date();
+  }
+
+  const branchDays = parseScheduleDays(params.branchSchedule, BRANCHES[params.branch].days);
+  const activeDays = normalizeClassDays(params.studentClassDays, branchDays);
+
+  if (activeDays.length === 0 || activeDays.length >= branchDays.length) {
+    return {
+      effectiveTotalDays: safeBase,
+      endDateStr: format(addDays(joinDate, safeBase), 'yyyy-MM-dd'),
+      isExtended: false,
+      activeDays,
+      branchDays,
+    };
+  }
+
+  const branchSet = new Set(branchDays.map((d) => WEEKDAY_TO_INDEX[d]));
+  const activeSet = new Set(activeDays.map((d) => WEEKDAY_TO_INDEX[d]));
+
+  // Count how many branch class sessions occur across the nominal course duration
+  let requiredSessions = 0;
+  for (let i = 0; i < safeBase; i++) {
+    if (branchSet.has(addDays(joinDate, i).getDay())) {
+      requiredSessions++;
+    }
+  }
+  requiredSessions = Math.max(1, requiredSessions);
+
+  // Walk calendar days forward on the student's selected attendance days to match requiredSessions
+  let completedSessions = 0;
+  let dayOffset = 0;
+  const maxWalkDays = 3650;
+  while (dayOffset < maxWalkDays) {
+    if (activeSet.has(addDays(joinDate, dayOffset).getDay())) {
+      completedSessions++;
+      if (completedSessions >= requiredSessions) {
+        break;
+      }
+    }
+    dayOffset++;
+  }
+
+  const effectiveTotalDays = Math.min(3650, Math.max(safeBase, dayOffset + 1));
+  return {
+    effectiveTotalDays,
+    endDateStr: format(addDays(joinDate, effectiveTotalDays), 'yyyy-MM-dd'),
+    isExtended: effectiveTotalDays > safeBase,
+    activeDays,
+    branchDays,
+  };
+}
+
+export function calculateDurationMetrics(
+  joiningDateStr: string,
+  totalDurationDays: number,
+  manualStatus?: StudentStatus,
+  scheduleOptions?: ScheduleDurationOptions
+): DurationMetrics {
+  const safeBase = Math.max(1, totalDurationDays || 1);
+  let joinDate: Date;
+  try {
+    joinDate = parseISO(joiningDateStr);
+    if (Number.isNaN(joinDate.getTime())) {
+      joinDate = new Date();
+    }
+  } catch {
+    joinDate = new Date();
+  }
+
+  let effectiveTotal = safeBase;
+  let endDateStr = format(addDays(joinDate, safeBase), 'yyyy-MM-dd');
+  let isExtended = false;
+
+  if (scheduleOptions) {
+    const resolved = resolveEffectiveSchedule({
+      joiningDateStr,
+      baseDurationDays: safeBase,
+      branch: scheduleOptions.branch,
+      branchSchedule: scheduleOptions.branchSchedule,
+      studentClassDays: scheduleOptions.studentClassDays,
+    });
+    effectiveTotal = resolved.effectiveTotalDays;
+    endDateStr = resolved.endDateStr;
+    isExtended = resolved.isExtended;
+  }
+
+  const today = new Date();
+  const elapsedRaw = differenceInCalendarDays(today, joinDate);
+  const elapsedDays = Math.max(0, Math.min(effectiveTotal, elapsedRaw));
+  const daysLeft =
+    manualStatus === 'completed' ? 0 : Math.max(0, effectiveTotal - Math.max(0, elapsedRaw));
+  const progressPct =
+    manualStatus === 'completed'
+      ? 100
+      : Math.min(100, Math.max(0, Math.round((elapsedDays / effectiveTotal) * 100)));
+
+  const isCompletedByDate = manualStatus === 'completed';
+  const isDurationOver = manualStatus !== 'completed' && daysLeft === 0;
+
+  let band: ProgressBand = 'green';
+  let statusLabel = 'On Track';
+
+  if (manualStatus === 'completed') {
+    band = 'red';
+    statusLabel = 'Completed';
+  } else if (progressPct <= 50) {
+    band = 'green';
+    statusLabel = 'On Track';
+  } else if (progressPct <= 70) {
+    band = 'yellow';
+    statusLabel = 'Midway';
+  } else if (progressPct <= 90) {
+    band = 'orange';
+    statusLabel = 'Ending Soon';
+  } else {
+    band = 'red';
+    statusLabel = daysLeft === 0 ? 'Duration Over' : 'Final Days';
+  }
+
+  return {
+    elapsedDays,
+    daysLeft,
+    totalDays: effectiveTotal,
+    baseTotalDays: safeBase,
+    isExtended,
+    progressPct,
+    endDateStr,
+    band,
+    statusLabel,
+    isCompletedByDate,
+    isDurationOver,
+  };
 }
 
 export function isBranchClassDay(

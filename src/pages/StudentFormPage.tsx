@@ -1,13 +1,18 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { addDays, format, parseISO } from 'date-fns';
-import { ArrowLeft, Edit3, Save, Trash2, UserPlus } from 'lucide-react';
+import { format } from 'date-fns';
+import { ArrowLeft, CalendarDays, Edit3, RotateCcw, Save, Trash2, UserPlus } from 'lucide-react';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { DarkSelect } from '../components/DarkSelect';
 import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 import { useNotify } from '../context/NotificationContext';
-import { BRANCH_LIST, BranchId, StudentStatus } from '../types';
+import {
+  formatReadableDate,
+  getStudentScheduleDays,
+  resolveEffectiveSchedule,
+} from '../lib/duration';
+import { BRANCHES, BRANCH_LIST, BranchId, CLASS_WEEKDAYS, StudentStatus } from '../types';
 
 export function StudentFormPage() {
   const { studentId } = useParams<{ studentId: string }>();
@@ -32,6 +37,10 @@ export function StudentFormPage() {
   const [regNo, setRegNo] = useState('');
   const [name, setName] = useState('');
   const [branch, setBranch] = useState<BranchId>(defaultBranch);
+  const [classDays, setClassDays] = useState<string[]>(() =>
+    getStudentScheduleDays(defaultBranch, activeTrainer?.branchSchedules?.[defaultBranch])
+  );
+  const [daysCustomized, setDaysCustomized] = useState(false);
   const [course1Id, setCourse1Id] = useState('');
   const [course2Id, setCourse2Id] = useState('');
   const [joiningDate, setJoiningDate] = useState(() => format(new Date(), 'yyyy-MM-dd'));
@@ -50,6 +59,14 @@ export function StudentFormPage() {
       setRegNo(editingStudent.regNo || '');
       setName(editingStudent.name);
       setBranch(editingStudent.branch);
+      setClassDays(
+        getStudentScheduleDays(
+          editingStudent.branch,
+          activeTrainer?.branchSchedules?.[editingStudent.branch],
+          editingStudent.classDays
+        )
+      );
+      setDaysCustomized(Boolean(editingStudent.classDays && editingStudent.classDays.length > 0));
       setCourse1Id(editingStudent.course1Id);
       setCourse2Id(editingStudent.course2Id || '');
       setJoiningDate(editingStudent.joiningDate);
@@ -60,7 +77,7 @@ export function StudentFormPage() {
     } else if (!course1Id && courses.length > 0) {
       setCourse1Id(courses[0].id);
     }
-  }, [editingStudent, courses, course1Id]);
+  }, [editingStudent, courses, course1Id, activeTrainer]);
 
   const selectedCourse1 = courses.find((c) => c.id === course1Id);
   const selectedCourse2 =
@@ -73,16 +90,45 @@ export function StudentFormPage() {
     selectedCourse2?.durationDays || 0
   );
 
-  const computedEndDate = useMemo(() => {
-    if (!joiningDate || computedTotalDays <= 0) return '';
-    try {
-      const parsed = parseISO(joiningDate);
-      if (Number.isNaN(parsed.getTime())) return '';
-      return format(addDays(parsed, computedTotalDays), 'dd MMM yyyy');
-    } catch {
-      return '';
+  const branchScheduleLabel =
+    activeTrainer?.branchSchedules?.[branch] || BRANCHES[branch].scheduleLabel;
+
+  const schedulePreview = useMemo(() => {
+    if (!joiningDate || computedTotalDays <= 0) return null;
+    return resolveEffectiveSchedule({
+      joiningDateStr: joiningDate,
+      baseDurationDays: computedTotalDays,
+      branch,
+      branchSchedule: branchScheduleLabel,
+      studentClassDays: classDays,
+    });
+  }, [joiningDate, computedTotalDays, branch, branchScheduleLabel, classDays]);
+
+  const handleBranchChange = (nextVal: string) => {
+    const nextBranch = nextVal as BranchId;
+    setBranch(nextBranch);
+    if (!isEdit && !daysCustomized) {
+      setClassDays(
+        getStudentScheduleDays(nextBranch, activeTrainer?.branchSchedules?.[nextBranch])
+      );
     }
-  }, [joiningDate, computedTotalDays]);
+  };
+
+  const toggleClassDay = (day: string) => {
+    setDaysCustomized(true);
+    setClassDays((prev) => {
+      if (prev.includes(day)) {
+        if (prev.length === 1) return prev;
+        return prev.filter((d) => d !== day);
+      }
+      return CLASS_WEEKDAYS.filter((d) => d === day || prev.includes(d));
+    });
+  };
+
+  const resetToBranchDays = () => {
+    setDaysCustomized(false);
+    setClassDays(getStudentScheduleDays(branch, activeTrainer?.branchSchedules?.[branch]));
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -100,6 +146,10 @@ export function StudentFormPage() {
       setErrorMsg('Please select a valid Course from your catalog.');
       return;
     }
+    if (classDays.length === 0) {
+      setErrorMsg('Please select at least one weekly attendance day.');
+      return;
+    }
 
     setBusy(true);
     try {
@@ -108,6 +158,7 @@ export function StudentFormPage() {
           regNo,
           name,
           branch,
+          classDays,
           course1Id,
           course2Id: course2Id === course1Id ? '' : course2Id,
           joiningDate,
@@ -127,6 +178,7 @@ export function StudentFormPage() {
           regNo,
           name,
           branch,
+          classDays,
           course1Id,
           course2Id: course2Id === course1Id ? '' : course2Id,
           joiningDate,
@@ -256,7 +308,7 @@ export function StudentFormPage() {
               </label>
               <DarkSelect
                 value={branch}
-                onChange={(val) => setBranch(val as BranchId)}
+                onChange={handleBranchChange}
                 ariaLabel="Branch"
                 options={BRANCH_LIST.filter(
                   (b) =>
@@ -269,6 +321,49 @@ export function StudentFormPage() {
                   sublabel: activeTrainer?.branchSchedules?.[b.id] || b.scheduleLabel,
                 }))}
               />
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-white/[0.08] bg-black/30 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <label className="flex items-center gap-1.5 text-xs font-medium text-zinc-200">
+                  <CalendarDays className="h-3.5 w-3.5 text-emerald-400" />
+                  <span>Weekly Attendance Days *</span>
+                </label>
+                <p className="mt-0.5 text-[11px] text-zinc-400">
+                  Branch default: {branchScheduleLabel}. Selecting fewer days automatically extends the final completion date while keeping course duration unchanged.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={resetToBranchDays}
+                className="inline-flex min-h-[32px] items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 text-[11px] font-medium text-zinc-300 transition-colors hover:bg-white/[0.09] hover:text-white"
+              >
+                <RotateCcw className="h-3 w-3" />
+                <span>Use branch days</span>
+              </button>
+            </div>
+
+            <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-6">
+              {CLASS_WEEKDAYS.map((day) => {
+                const selected = classDays.includes(day);
+                return (
+                  <button
+                    key={day}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => toggleClassDay(day)}
+                    className={`min-h-[40px] rounded-xl border font-mono text-xs font-semibold transition-colors ${
+                      selected
+                        ? 'border-emerald-500/60 bg-emerald-500/20 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.2)]'
+                        : 'border-white/10 bg-white/[0.03] text-zinc-400 hover:border-white/25 hover:text-white'
+                    }`}
+                  >
+                    {day}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -311,18 +406,26 @@ export function StudentFormPage() {
             </div>
           </div>
 
-          {computedTotalDays > 0 && (
+          {computedTotalDays > 0 && schedulePreview && (
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.07] px-4 py-3 text-xs">
-              <span className="text-emerald-300">
-                Recorded Duration:{' '}
-                <strong className="font-mono">{computedTotalDays} days</strong>
-              </span>
-              {computedEndDate && (
-                <span className="text-zinc-300">
-                  Estimated Completion:{' '}
-                  <strong className="font-mono text-white">{computedEndDate}</strong>
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-emerald-300">
+                  Course Duration:{' '}
+                  <strong className="font-mono">{computedTotalDays} days</strong>
                 </span>
-              )}
+                {schedulePreview.isExtended && (
+                  <span className="text-amber-300">
+                    Extended Timeline ({classDays.join(', ')}):{' '}
+                    <strong className="font-mono">{schedulePreview.effectiveTotalDays} days</strong>
+                  </span>
+                )}
+              </div>
+              <span className="text-zinc-300">
+                Estimated Completion:{' '}
+                <strong className="font-mono text-white">
+                  {formatReadableDate(schedulePreview.endDateStr)}
+                </strong>
+              </span>
             </div>
           )}
 

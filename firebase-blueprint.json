@@ -187,6 +187,10 @@
           "type": "string",
           "enum": ["MAVELIKARA", "KAYAMKULAM"]
         },
+        "classDays": {
+          "type": "array",
+          "description": "Assigned weekly attendance days (Mon-Sat) for the student."
+        },
         "course1Id": {
           "type": "string",
           "minLength": 1,

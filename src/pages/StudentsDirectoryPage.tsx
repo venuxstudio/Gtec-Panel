@@ -5,7 +5,12 @@ import { DarkSelect } from '../components/DarkSelect';
 import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 import { useNotify } from '../context/NotificationContext';
-import { calculateDurationMetrics, fetchInChunks } from '../lib/duration';
+import {
+  calculateDurationMetrics,
+  fetchInChunks,
+  formatScheduleDays,
+  getStudentScheduleDays,
+} from '../lib/duration';
 import { AttendanceRecord, BRANCH_LIST, BranchId } from '../types';
 
 export function StudentsDirectoryPage() {
@@ -60,6 +65,7 @@ export function StudentsDirectoryPage() {
         attendanceByStudentId,
         trainerName: activeTrainer?.name || 'Trainer',
         trainerDesignation: activeTrainer?.designation || '',
+        branchSchedules: activeTrainer?.branchSchedules,
       });
       notify({
         title: 'PDF REPORT DOWNLOADED',
@@ -167,12 +173,22 @@ export function StudentsDirectoryPage() {
         ) : (
           <div className="divide-y divide-white/[0.06]">
             {filtered.map((student) => {
+              const branchSchedule = activeTrainer?.branchSchedules?.[student.branch];
               const metrics = calculateDurationMetrics(
                 student.joiningDate,
                 student.totalDurationDays,
-                student.status
+                student.status,
+                {
+                  branch: student.branch,
+                  branchSchedule,
+                  studentClassDays: student.classDays,
+                }
               );
-              const isCompleted = student.status === 'completed' || metrics.isCompletedByDate;
+              const isCompleted = student.status === 'completed';
+              const isDurationOver = metrics.isDurationOver;
+              const studentDaysLabel = formatScheduleDays(
+                getStudentScheduleDays(student.branch, branchSchedule, student.classDays)
+              );
 
               return (
                 <div
@@ -194,6 +210,14 @@ export function StudentsDirectoryPage() {
                       )}
                       <span className="text-xs text-zinc-500">·</span>
                       <span className="font-mono text-xs text-zinc-400">{student.branch}</span>
+                      {metrics.isExtended && (
+                        <>
+                          <span className="text-xs text-zinc-500">·</span>
+                          <span className="font-mono text-[11px] text-amber-300">
+                            {studentDaysLabel}
+                          </span>
+                        </>
+                      )}
                     </div>
                     <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
                       <span className="text-zinc-200">
@@ -201,8 +225,20 @@ export function StudentsDirectoryPage() {
                         {student.course2Short ? ` + ${student.course2Short}` : ''}
                       </span>
                       <span aria-hidden="true">·</span>
-                      <span className={isCompleted ? 'text-red-400' : 'text-emerald-400'}>
-                        {isCompleted ? 'Completed' : 'Ongoing'}
+                      <span
+                        className={
+                          isCompleted
+                            ? 'text-red-400'
+                            : isDurationOver
+                            ? 'text-orange-400'
+                            : 'text-emerald-400'
+                        }
+                      >
+                        {isCompleted
+                          ? 'Completed'
+                          : isDurationOver
+                          ? 'Duration Over'
+                          : 'Ongoing'}
                       </span>
                       <span aria-hidden="true">·</span>
                       <span className="font-mono tabular-nums">{metrics.daysLeft}d left</span>

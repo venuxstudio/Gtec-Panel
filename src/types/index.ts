@@ -82,6 +82,7 @@ export interface Student {
   regNo: string;
   name: string;
   branch: BranchId;
+  classDays?: string[];
   course1Id: string;
   course1Short: string;
   course1Full: string;
